@@ -1,0 +1,37 @@
+# Build output
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Compiled objects
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+
+# Test artifacts
+Testing/
+CTestTestfile.cmake
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Coverage
+*.gcda
+*.gcno
+*.gcov
