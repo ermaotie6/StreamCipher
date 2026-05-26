@@ -1,4 +1,4 @@
-// Galois Field GF(2^8) — batch and bitwise implementations
+// gf.cpp — GF(2^8) 批量运算
 #include "streamcipher/core/gf.hpp"
 #include <cstring>
 

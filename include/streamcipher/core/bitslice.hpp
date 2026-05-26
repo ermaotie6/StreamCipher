@@ -1,16 +1,10 @@
-// Bit-slicing layer — SIMD-within-a-register (SWAR) for AES
+// bitslice.hpp — 位切片 AES，把 8 个块转置成 128 个 bit-slice word
 //
-// Rearranges B blocks so that each bit position is processed as a machine
-// word. Boolean circuits replace lookup tables, giving constant-time
-// execution and resistance to cache-timing attacks.
-//
-// Representation:
-//   For SLICE_WIDTH blocks (each 16 bytes = 128 bits):
-//     block[0..B-1][0..15] = 16 bytes per block
-//   Bit-sliced: 128 words, word[i] = bits i of all B blocks packed together
-//
-// Reference: Käsper & Schwabe, "Faster and Timing-Attack Resistant AES-GCM",
-//            CHES 2009.
+// 原始论文: Käsper & Schwabe, CHES 2009
+// 简单说：传统 AES 是一个字节一个字节处理，我们改成每个 bit 位置
+// 上 8 个块的值打包成一个 uint8_t（SliceWord），然后所有轮操作
+// （SubBytes/ShiftRows/MixColumns/AddRoundKey）都在 bit-slice 域里
+// 用布尔电路搞定，全程不查表。
 
 #pragma once
 
@@ -21,85 +15,45 @@
 
 namespace streamcipher::bitslice {
 
-// ── Configuration ───────────────────────────────────────────
+constexpr size_t BLOCK_BYTES = 16;
+constexpr size_t BLOCK_BITS  = 128;
+constexpr size_t SLICE_WIDTH = 8;     // 一次处理 8 个块
+constexpr size_t SLICE_BYTES = SLICE_WIDTH * BLOCK_BYTES;  // 128
 
-constexpr size_t BLOCK_BYTES  = 16;   // 128 bits
-constexpr size_t BLOCK_BITS   = 128;
-#ifdef STREAMCIPHER_SIMD
-constexpr size_t SLICE_WIDTH  = 8;    // AVX2: 8 blocks in parallel
-#else
-constexpr size_t SLICE_WIDTH  = 8;    // Scalar: 8 blocks × 8 bits = uint64_t worth
-#endif
-
-constexpr size_t SLICE_BYTES  = SLICE_WIDTH * BLOCK_BYTES;  // Total bytes for one slice
-
-/// A bit-slice word: one bit from each of SLICE_WIDTH blocks.
-/// Always uint8_t for ABI stability; SIMD widening happens internally.
+// 一个 bit-slice word：8 个块的同一个 bit 位置的值
 using SliceWord = uint8_t;
 
-/// Bit-sliced AES state: 128 SliceWords, each holding one bit from all blocks.
+// bit-sliced AES state：128 个 SliceWord，cache-line 对齐
 struct alignas(64) BitSliceState {
     SliceWord bits[BLOCK_BITS];
 };
 
-// ── Conversion ──────────────────────────────────────────────
-
-/// Pack SLICE_WIDTH byte-blocks into bit-sliced representation.
-/// src: SLICE_WIDTH * 16 bytes, laid out as block[0][0..15], block[1][0..15], ...
+// pack: 8 个 16 字节块 → BitSliceState
 [[nodiscard]] BitSliceState pack(std::span<const uint8_t, SLICE_BYTES> src) noexcept;
 
-/// Unpack bit-sliced representation back to byte-blocks.
+// unpack: BitSliceState → 8 个 16 字节块
 void unpack(const BitSliceState& state,
             std::span<uint8_t, SLICE_BYTES> dst) noexcept;
 
-// ── Boolean Operations ──────────────────────────────────────
-
+// 状态级布尔运算（给将来纯门电路 S-box 用的）
 [[nodiscard]] BitSliceState xor_state(const BitSliceState& a, const BitSliceState& b) noexcept;
 [[nodiscard]] BitSliceState and_state(const BitSliceState& a, const BitSliceState& b) noexcept;
 [[nodiscard]] BitSliceState not_state(const BitSliceState& a) noexcept;
 [[nodiscard]] BitSliceState or_state(const BitSliceState& a, const BitSliceState& b) noexcept;
 
-// ── Bit-sliced AES Round Operations ─────────────────────────
-
-/// SubBytes: apply the AES S-box to all 16 bytes of all SLICE_WIDTH blocks.
-/// Uses a Boolean circuit — no lookup tables, constant-time.
+// AES 轮操作（全部在 bit-sliced 域中）
 void sub_bytes(BitSliceState& state) noexcept;
-
-/// Inverse SubBytes.
 void inv_sub_bytes(BitSliceState& state) noexcept;
-
-/// ShiftRows: row-wise rotation of bytes.
-/// Row 0: unchanged. Row 1: left 1. Row 2: left 2. Row 3: left 3.
 void shift_rows(BitSliceState& state) noexcept;
-
-/// Inverse ShiftRows.
 void inv_shift_rows(BitSliceState& state) noexcept;
-
-/// MixColumns: column-wise GF(2^8) matrix multiplication.
-/// Each column (4 bytes) multiplied by:
-///   [2 3 1 1]
-///   [1 2 3 1]
-///   [1 1 2 3]
-///   [3 1 1 2]
 void mix_columns(BitSliceState& state) noexcept;
-
-/// Inverse MixColumns.
 void inv_mix_columns(BitSliceState& state) noexcept;
-
-/// AddRoundKey: XOR state with a round key (byte-oriented, not bit-sliced).
-/// key: 16 bytes (one round key), applied to all SLICE_WIDTH blocks.
 void add_round_key(BitSliceState& state,
                    std::span<const uint8_t, BLOCK_BYTES> key) noexcept;
 
-// ── Full AES in Bit-Sliced Form ─────────────────────────────
-
-/// Encrypt SLICE_WIDTH blocks using the bit-sliced path.
-/// blocks: SLICE_WIDTH * 16 bytes (modified in-place).
-/// round_keys: 11 round keys of 16 bytes each.
+// 完整的 bit-sliced 加密/解密
 void encrypt_blocks(uint8_t* blocks,
                     std::span<const std::array<uint8_t, BLOCK_BYTES>, 11> round_keys) noexcept;
-
-/// Decrypt SLICE_WIDTH blocks.
 void decrypt_blocks(uint8_t* blocks,
                     std::span<const std::array<uint8_t, BLOCK_BYTES>, 11> round_keys) noexcept;
 

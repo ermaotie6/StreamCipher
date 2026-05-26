@@ -1,18 +1,12 @@
-// Bit-sliced AES implementation
+// bitslice.cpp --- 把8个AES块转置成128个bit-slice word，然后一轮一轮撸
 //
-// Pack B=SLICE_WIDTH blocks into 128 bit-slice words.
-// All round operations (SubBytes, ShiftRows, MixColumns, AddRoundKey)
-// are implemented as Boolean circuits on the slice words — no lookup
-// tables, constant-time by construction.
+// 核心思路来自 Käsper & Schwabe 的 CHES 2009 论文。简单说就是把
+// 传统AES的"按字节处理"改成"按bit位置处理"——每个bit位置上8个块的值
+// 塞进一个uint8_t里，然后所有轮操作都用布尔电路搞定，不用查表。
 //
-// The SubBytes step uses an algebraic S-box:
-//   S(x) = affine(GF_inv(x))
-// where GF_inv is computed via composite field GF((2^4)^2) reduction,
-// expressed entirely as AND/XOR/NOT gates on the bit-slice words.
-//
-// References:
-//   Canright, "A Very Compact S-box for AES", CHES 2005
-//   Käsper & Schwabe, "Faster and Timing-Attack Resistant AES-GCM", CHES 2009
+// 当前 S-box 走的是 gf::sbox() 的标量路径（每字节提取→算→塞回去），
+// 虽然不如纯布尔电路快，但好歹是常数时间+无查表，先跑通了再说。
+// #if 0 里面有一套 Canright GF((2^4)^2) 布尔电路的实现，调通了再切过去。
 
 #include "streamcipher/core/bitslice.hpp"
 #include "streamcipher/core/gf.hpp"
@@ -20,16 +14,14 @@
 
 namespace streamcipher::bitslice {
 
-// ═══════════════════════════════════════════════════════════════
-//  Pack / Unpack
-// ═══════════════════════════════════════════════════════════════
+// ---- pack / unpack ----
 
 BitSliceState pack(std::span<const uint8_t, SLICE_BYTES> src) noexcept {
     BitSliceState state{};
     for (int bit = 0; bit < 128; ++bit) {
         SliceWord word = 0;
-        int byte_idx = bit / 8;          // byte 0..15
-        int bit_in_byte = bit % 8;       // bit position 0..7
+        int byte_idx = bit / 8;
+        int bit_in_byte = bit % 8;
         for (size_t block = 0; block < SLICE_WIDTH; ++block) {
             uint8_t val = src[block * 16 + byte_idx];
             if ((val >> bit_in_byte) & 1) {
@@ -56,9 +48,7 @@ void unpack(const BitSliceState& state,
     }
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  Boolean operations on the full state
-// ═══════════════════════════════════════════════════════════════
+// ---- 状态级别的布尔运算（给将来纯电路S-box用的） ----
 
 BitSliceState xor_state(const BitSliceState& a, const BitSliceState& b) noexcept {
     BitSliceState r;
@@ -84,34 +74,23 @@ BitSliceState or_state(const BitSliceState& a, const BitSliceState& b) noexcept 
     return r;
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  SubBytes — Algebraic S-box via GF((2^4)^2) composite field
-// ═══════════════════════════════════════════════════════════════
-//
-// The AES S-box is: S(x) = A · GF_inv(x) + c
-// where A is the affine matrix and c = 0x63.
-//
-// GF_inv is computed via the composite field GF((2^4)^2):
-//   - Map GF(2^8) → GF((2^4)^2) using isomorphism T
-//   - Compute inverse in GF((2^4)^2) using GF(2^4) sub-operations
-//   - Map back using T^(-1)
-//
-// We implement this as a Boolean circuit that operates on the 8 bit-slice
-// words of each byte position. The circuit is applied to all 16 byte
-// positions of all SLICE_WIDTH blocks simultaneously.
-//
-// GF(2^4) irreducible: x^4 + x + 1
-// GF((2^4)^2) irreducible: y^2 + y + λ, with λ = 0x6 (ω^2 + ω in GF(2^4))
+// ================================================================
+// Canright GF((2^4)^2) 布尔电路 S-box --- 矩阵还没调对，先封着
+// 思路是对的：把 GF(2^8) 的逆元映射到 GF((2^4)^2) 里算，再映回来
+// 这样整个 SubBytes 就是一套 AND/XOR 门电路，完全不用查表
+// 问题是 T_transform 和 T_inv_transform 那两套 4×8 矩阵的系数
+// 我算了好几遍都对不上 NIST 的测试向量，所以先走标量路径
+// ================================================================
 
 namespace {
 
-#if 0  // Future: Boolean-circuit Canright S-box (GF((2^4)^2) composite field)
-// ── GF(2^4) operations on 4 SliceWords ──────────────────────
-// Each GF(2^4) element is (w3,w2,w1,w0) = coefficient of x^3..x^0
+#if 0  // ---- 下面这套布尔电路矩阵没调通，先封印 ----
+
+// GF(2^4) 的四则运算，每个元素用 4 个 SliceWord 表示 (w3,w2,w1,w0)
 
 using GF4 = std::array<SliceWord, 4>;
 
-// Multiply in GF(2^4): (a3,a2,a1,a0) * (b3,b2,b1,b0) mod x^4+x+1
+// GF(2^4) 乘法，模 x^4+x+1
 [[nodiscard]] GF4 gf4_mul(const GF4& a, const GF4& b) noexcept {
     SliceWord a0=a[0], a1=a[1], a2=a[2], a3=a[3];
     SliceWord b0=b[0], b1=b[1], b2=b[2], b3=b[3];
@@ -131,23 +110,20 @@ using GF4 = std::array<SliceWord, 4>;
     SliceWord tD = (a2 ^ a3) & b3;
 
     return {
-        t9 ^ tA ^ tB ^ (a0 ^ a3) & b3,     // c3
-        t8 ^ (a0 ^ a3) & b1 ^ t5 ^ t6,     // c2
-        t7 ^ t1  ^ tC ^ tD,                // c1
-        t3 ^ t0  ^ t1 ^ t2                 // c0
+        t9 ^ tA ^ tB ^ (a0 ^ a3) & b3,
+        t8 ^ (a0 ^ a3) & b1 ^ t5 ^ t6,
+        t7 ^ t1  ^ tC ^ tD,
+        t3 ^ t0  ^ t1 ^ t2
     };
 }
 
-// Square in GF(2^4): (a3,a2,a1,a0) -> (a3,a1^a3,a2,a0^a2)
+// GF(2^4) 平方
 [[nodiscard]] GF4 gf4_sq(const GF4& a) noexcept {
     return {a[3], a[1] ^ a[3], a[2], a[0] ^ a[2]};
 }
 
-// Inverse in GF(2^4) via a^14 — expressed as Boolean circuit
-// (GF(2^4) has only 16 elements; we can derive minimal expressions)
+// GF(2^4) 逆元，暴力真值表化简出来的
 [[nodiscard]] GF4 gf4_inv(const GF4& a) noexcept {
-    // Algebraic derivation: for a ≠ 0, inv = a^14
-    // Circuit derived from truth table minimization
     SliceWord a0=a[0], a1=a[1], a2=a[2], a3=a[3];
 
     SliceWord t0 = a1 ^ a2 ^ a3 ^ (a0 & a1 & a2) ^ (a0 & a1 & a3) ^ (a0 & a2 & a3);
@@ -158,78 +134,44 @@ using GF4 = std::array<SliceWord, 4>;
     return {t3, t2, t1, t0};
 }
 
-// Multiply by constant λ = 0x6 in GF(2^4)
-// λ = x^2 + x, so (λ3,λ2,λ1,λ0) = (0,1,1,0)
-// λ * (a3,a2,a1,a0) mod x^4+x+1
+// 乘常数 λ=0x6（GF(2^4) 里面 ω^2+ω 的结果）
 [[nodiscard]] GF4 gf4_mul_lambda(const GF4& a) noexcept {
     SliceWord a0=a[0], a1=a[1], a2=a[2], a3=a[3];
-    // Precomputed: λ = 0110 binary, multiply and reduce
-    // c3 = a2 ^ a0
-    // c2 = a1 ^ a3
-    // c1 = a0 ^ a3
-    // c0 = a3
     return {a2 ^ a0, a1 ^ a3, a0 ^ a3, a3};
 }
 
-// ── GF((2^4)^2) inverse ─────────────────────────────────────
-//
-// Element: a_h*y + a_l, where a_h,a_l ∈ GF(2^4)
-// Inverse: (a_h*y + a_l)^(-1) = a_h*d*y + (a_h + a_l)*d
-// where d = (a_h^2 * λ + a_h*a_l + a_l^2)^(-1)
-//
-// Takes 8 SliceWords (ah3..ah0, al3..al0), returns 8 SliceWords
-struct GF8Composite {
-    GF4 hi, lo;
-};
+// GF((2^4)^2) 的元素：高4位 + 低4位
+struct GF8Composite { GF4 hi, lo; };
 
+// GF((2^4)^2) 的逆元： (a_h*y + a_l)^(-1) = a_h*d*y + (a_h+a_l)*d
+// 其中 d = (a_h^2*λ + a_h*a_l + a_l^2)^(-1)
 [[nodiscard]] GF8Composite gf8c_inv(const GF8Composite& x) noexcept {
-    GF4 ah2 = gf4_sq(x.hi);                    // ah^2
-    GF4 al2 = gf4_sq(x.lo);                    // al^2
-    GF4 ahal = gf4_mul(x.hi, x.lo);           // ah * al
-    GF4 tmp = gf4_mul_lambda(ah2);            // ah^2 * λ
-    GF4 sum = {
-        tmp[3] ^ ahal[3] ^ al2[3],
-        tmp[2] ^ ahal[2] ^ al2[2],
-        tmp[1] ^ ahal[1] ^ al2[1],
-        tmp[0] ^ ahal[0] ^ al2[0]
-    };                                         // ah^2*λ + ah*al + al^2
-    GF4 d = gf4_inv(sum);                      // d = (...)⁻¹
-    GF4 r_hi = gf4_mul(x.hi, d);              // ah * d
-    GF4 ah_plus_al = {
-        x.hi[3] ^ x.lo[3],
-        x.hi[2] ^ x.lo[2],
-        x.hi[1] ^ x.lo[1],
-        x.hi[0] ^ x.lo[0]
-    };
-    GF4 r_lo = gf4_mul(ah_plus_al, d);        // (ah+al) * d
+    GF4 ah2   = gf4_sq(x.hi);
+    GF4 al2   = gf4_sq(x.lo);
+    GF4 ahal  = gf4_mul(x.hi, x.lo);
+    GF4 tmp   = gf4_mul_lambda(ah2);
+    GF4 sum   = { tmp[3]^ahal[3]^al2[3], tmp[2]^ahal[2]^al2[2],
+                  tmp[1]^ahal[1]^al2[1], tmp[0]^ahal[0]^al2[0] };
+    GF4 d     = gf4_inv(sum);
+    GF4 r_hi  = gf4_mul(x.hi, d);
+    GF4 ah_al = { x.hi[3]^x.lo[3], x.hi[2]^x.lo[2],
+                  x.hi[1]^x.lo[1], x.hi[0]^x.lo[0] };
+    GF4 r_lo  = gf4_mul(ah_al, d);
     return {r_hi, r_lo};
 }
 
-// ── Isomorphism: GF(2^8) ↔ GF((2^4)^2) ─────────────────────
-//
-// T: GF(2^8) → GF((2^4)^2)
-// Input: bits (b7..b0) of a GF(2^8) element
-// Output: (ah3..ah0, al3..al0) in GF((2^4)^2)
-//
-// Using the Canright isomorphism with polynomial:
-//   GF(2^8): x^8 + x^4 + x^3 + x + 1
-//   GF(2^4): t^4 + t + 1
-//   GF((2^4)^2): y^2 + y + λ, λ = 0x6
+// 同构映射 T: GF(2^8) → GF((2^4)^2)
+// 这里的两套 4×8 矩阵是 Canright 论文里给的标准形式
+// 但我算了几遍跟 NIST 向量对不上，怀疑是 λ 的取值或者基的选择有问题
+// TODO: 对着论文重新推一遍矩阵系数
 
 void T_transform(SliceWord b7, SliceWord b6, SliceWord b5, SliceWord b4,
                  SliceWord b3, SliceWord b2, SliceWord b1, SliceWord b0,
                  GF4& ah, GF4& al) noexcept {
-    // Linear transform: ah = T_hi · b, al = T_lo · b
-    // where T_hi and T_lo are 4×8 binary matrices.
-    // These are derived from the field isomorphism.
-
-    // T_hi (rows: ah3,ah2,ah1,ah0):
     ah[3] = b7 ^ b5;
     ah[2] = b7 ^ b6 ^ b4 ^ b3 ^ b2 ^ b1;
     ah[1] = b7 ^ b5 ^ b3 ^ b2;
     ah[0] = b7 ^ b6 ^ b3 ^ b2 ^ b1 ^ b0;
-
-    // T_lo (rows: al3,al2,al1,al0):
     al[3] = b7 ^ b6 ^ b5 ^ b3;
     al[2] = b6 ^ b4;
     al[1] = b7 ^ b6 ^ b5 ^ b4 ^ b3;
@@ -239,7 +181,6 @@ void T_transform(SliceWord b7, SliceWord b6, SliceWord b5, SliceWord b4,
 void T_inv_transform(const GF4& ah, const GF4& al,
                      SliceWord& b7, SliceWord& b6, SliceWord& b5, SliceWord& b4,
                      SliceWord& b3, SliceWord& b2, SliceWord& b1, SliceWord& b0) noexcept {
-    // Inverse linear transform: b = T^(-1)_hi · ah + T^(-1)_lo · al
     b7 = ah[3] ^ ah[2] ^ ah[1] ^ al[3] ^ al[0];
     b6 = ah[2] ^ ah[0] ^ al[3] ^ al[1];
     b5 = ah[0] ^ al[2] ^ al[0];
@@ -250,84 +191,43 @@ void T_inv_transform(const GF4& ah, const GF4& al,
     b0 = ah[3] ^ ah[2] ^ ah[1] ^ ah[0] ^ al[3] ^ al[2] ^ al[1];
 }
 
-// ── Affine Transform ────────────────────────────────────────
-// b_i = a_i ^ a_(i+4) ^ a_(i+5) ^ a_(i+6) ^ a_(i+7) ^ c_i
-// where c = 0x63, indices mod 8
-
+// 正向仿射，c=0x63
 void affine_transform(SliceWord& b7, SliceWord& b6, SliceWord& b5, SliceWord& b4,
                       SliceWord& b3, SliceWord& b2, SliceWord& b1, SliceWord& b0) noexcept {
     SliceWord a7=b7, a6=b6, a5=b5, a4=b4, a3=b3, a2=b2, a1=b1, a0=b0;
-
-    // AES affine transform:
-    // b_i = a_i ^ a_(i+4) ^ a_(i+5) ^ a_(i+6) ^ a_(i+7) ^ c_i  (indices mod 8)
-    // c = 0x63 = 01100011 (LSB first: c0=1,c1=1,c2=0,c3=0,c4=0,c5=1,c6=1,c7=0)
-    //
-    // Simplified: b_i = a_i ^ a_(i+4) ^ a_(i+5) ^ a_(i+6) ^ a_(i+7) ^ c_i
-    SliceWord ALL_ONES = ~SliceWord(0);
-    SliceWord ALL_ZERO = SliceWord(0);
-
-    b0 = a0 ^ a4 ^ a5 ^ a6 ^ a7 ^ ALL_ONES;  // c0=1
-    b1 = a1 ^ a5 ^ a6 ^ a7 ^ a0 ^ ALL_ONES;  // c1=1
-    b2 = a2 ^ a6 ^ a7 ^ a0 ^ a1 ^ ALL_ZERO;  // c2=0
-    b3 = a3 ^ a7 ^ a0 ^ a1 ^ a2 ^ ALL_ZERO;  // c3=0
-    b4 = a4 ^ a0 ^ a1 ^ a2 ^ a3 ^ ALL_ZERO;  // c4=0
-    b5 = a5 ^ a1 ^ a2 ^ a3 ^ a4 ^ ALL_ONES;  // c5=1
-    b6 = a6 ^ a2 ^ a3 ^ a4 ^ a5 ^ ALL_ONES;  // c6=1
-    b7 = a7 ^ a3 ^ a4 ^ a5 ^ a6 ^ ALL_ZERO;  // c7=0
+    SliceWord ONES = ~SliceWord(0), ZERO = SliceWord(0);
+    b0 = a0 ^ a4 ^ a5 ^ a6 ^ a7 ^ ONES;
+    b1 = a1 ^ a5 ^ a6 ^ a7 ^ a0 ^ ONES;
+    b2 = a2 ^ a6 ^ a7 ^ a0 ^ a1 ^ ZERO;
+    b3 = a3 ^ a7 ^ a0 ^ a1 ^ a2 ^ ZERO;
+    b4 = a4 ^ a0 ^ a1 ^ a2 ^ a3 ^ ZERO;
+    b5 = a5 ^ a1 ^ a2 ^ a3 ^ a4 ^ ONES;
+    b6 = a6 ^ a2 ^ a3 ^ a4 ^ a5 ^ ONES;
+    b7 = a7 ^ a3 ^ a4 ^ a5 ^ a6 ^ ZERO;
 }
-
-// ── Combined S-box circuit for one byte position ────────────
 
 void sbox_circuit(SliceWord& b7, SliceWord& b6, SliceWord& b5, SliceWord& b4,
                   SliceWord& b3, SliceWord& b2, SliceWord& b1, SliceWord& b0) noexcept {
-    // Step 1: Map GF(2^8) → GF((2^4)^2)
     GF4 ah, al;
     T_transform(b7, b6, b5, b4, b3, b2, b1, b0, ah, al);
-
-    // Step 2: Compute inverse in GF((2^4)^2)
     GF8Composite x = {ah, al};
     GF8Composite inv_x = gf8c_inv(x);
-
-    // Step 3: Map back GF((2^4)^2) → GF(2^8)
     T_inv_transform(inv_x.hi, inv_x.lo, b7, b6, b5, b4, b3, b2, b1, b0);
-
-    // Step 4: Affine transform
     affine_transform(b7, b6, b5, b4, b3, b2, b1, b0);
 }
 
-// Inverse S-box circuit
+// 逆S-box：先逆仿射（d=0x05），再走同样的 GF((2^4)^2) 逆元
 void inv_sbox_circuit(SliceWord& b7, SliceWord& b6, SliceWord& b5, SliceWord& b4,
                       SliceWord& b3, SliceWord& b2, SliceWord& b1, SliceWord& b0) noexcept {
-    // Inverse affine: b_i = a_(i+2) ^ a_(i+5) ^ a_(i+7) ^ d_i, d = 0x05
     SliceWord a7=b7, a6=b6, a5=b5, a4=b4, a3=b3, a2=b2, a1=b1, a0=b0;
+    SliceWord ONES = ~SliceWord(0), ZERO = SliceWord(0);
+    SliceWord s0 = a2 ^ a5 ^ a7,  s1 = a3 ^ a6 ^ a0;
+    SliceWord s2 = a4 ^ a7 ^ a1,  s3 = a5 ^ a0 ^ a2;
+    SliceWord s4 = a6 ^ a1 ^ a3,  s5 = a7 ^ a2 ^ a4;
+    SliceWord s6 = a0 ^ a3 ^ a5,  s7 = a1 ^ a4 ^ a6;
+    b0 = s0 ^ ONES;  b1 = s1 ^ ZERO;  b2 = s2 ^ ONES;  b3 = s3 ^ ZERO;
+    b4 = s4 ^ ZERO;  b5 = s5 ^ ZERO;  b6 = s6 ^ ZERO;  b7 = s7 ^ ZERO;
 
-    // Rotation by 2: (a2,a3,a4,a5,a6,a7,a0,a1)
-    // Rotation by 5: (a5,a6,a7,a0,a1,a2,a3,a4)
-    // Rotation by 7: (a7,a0,a1,a2,a3,a4,a5,a6)
-
-    SliceWord s0 = a2 ^ a5 ^ a7;  // a_(0+2) ^ a_(0+5) ^ a_(0+7)
-    SliceWord s1 = a3 ^ a6 ^ a0;
-    SliceWord s2 = a4 ^ a7 ^ a1;
-    SliceWord s3 = a5 ^ a0 ^ a2;
-    SliceWord s4 = a6 ^ a1 ^ a3;
-    SliceWord s5 = a7 ^ a2 ^ a4;
-    SliceWord s6 = a0 ^ a3 ^ a5;
-    SliceWord s7 = a1 ^ a4 ^ a6;
-
-    // d = 0x05 = 00000101: d0=1, d1=0, d2=1, d3=0, d4=0, d5=0, d6=0, d7=0
-    SliceWord ALL_ONES = ~SliceWord(0);
-    SliceWord ALL_ZERO = SliceWord(0);
-
-    b0 = s0 ^ ALL_ONES;
-    b1 = s1 ^ ALL_ZERO;
-    b2 = s2 ^ ALL_ONES;
-    b3 = s3 ^ ALL_ZERO;
-    b4 = s4 ^ ALL_ZERO;
-    b5 = s5 ^ ALL_ZERO;
-    b6 = s6 ^ ALL_ZERO;
-    b7 = s7 ^ ALL_ZERO;
-
-    // Now compute GF inverse via composite field (same as forward S-box steps 1-3)
     GF4 ah, al;
     T_transform(b7, b6, b5, b4, b3, b2, b1, b0, ah, al);
     GF8Composite x = {ah, al};
@@ -335,58 +235,37 @@ void inv_sbox_circuit(SliceWord& b7, SliceWord& b6, SliceWord& b5, SliceWord& b4
     T_inv_transform(inv_x.hi, inv_x.lo, b7, b6, b5, b4, b3, b2, b1, b0);
 }
 
-#endif // Future Boolean-circuit S-box
+#endif // 布尔电路 S-box (矩阵没调通)
 
 } // anonymous namespace
 
-// ═══════════════════════════════════════════════════════════════
-//  SubBytes — Verified scalar-path implementation
-// ═══════════════════════════════════════════════════════════════
+// ---- SubBytes：用标量 gf::sbox() 先跑着 ----
 //
-// The S-box is computed by extracting each byte position, running
-// gf::sbox() on all SLICE_WIDTH bytes, and injecting back.
-// gf::sbox() is itself constant-time and lookup-free (algebraic
-// GF inverse + affine via rotr).
-//
-// A full Boolean-circuit implementation (Canright GF((2^4)^2)
-// composite-field S-box) is prepared in the #if 0 block below
-// for future activation once the isomorphism matrices are verified.
+// 原理很简单：把每个 byte 位置从 8 个 bit-slice word 里抽出来 8 个字节，
+// 每个字节过一遍 gf::sbox()（本身就是常数时间的），再塞回去。
+// 虽然不如纯门电路快，但正确性优先，后面再优化。
 
 void sub_bytes(BitSliceState& state) noexcept {
-    // Extract the 8 bits for each of the 16 byte positions,
-    // compute S-box via the verified scalar path,
-    // and inject back.
-    // This is still constant-time (gf::sbox is lookup-free) and
-    // gives correct results while we tune the Boolean circuit.
     uint8_t bytes[SLICE_WIDTH];
 
     for (int byte_idx = 0; byte_idx < 16; ++byte_idx) {
-        // Extract SLICE_WIDTH bytes from the bit-sliced state
+        // 从 8 个 bit-slice word 里抽出 SLICE_WIDTH 个字节
         std::memset(bytes, 0, SLICE_WIDTH);
         for (int bit = 0; bit < 8; ++bit) {
             SliceWord word = state.bits[byte_idx * 8 + bit];
             for (size_t block = 0; block < SLICE_WIDTH; ++block) {
-                if ((word >> block) & 1) {
-                    bytes[block] |= (1u << bit);
-                }
+                if ((word >> block) & 1) bytes[block] |= (1u << bit);
             }
         }
-
-        // Apply S-box to each byte
-        for (size_t b = 0; b < SLICE_WIDTH; ++b) {
-            bytes[b] = gf::sbox(bytes[b]);
-        }
-
-        // Inject back
-        for (int bit = 0; bit < 8; ++bit) {
-            state.bits[byte_idx * 8 + bit] = 0;
-        }
+        // 过 S-box
+        for (size_t b = 0; b < SLICE_WIDTH; ++b) bytes[b] = gf::sbox(bytes[b]);
+        // 塞回去
+        for (int bit = 0; bit < 8; ++bit) state.bits[byte_idx * 8 + bit] = 0;
         for (size_t block = 0; block < SLICE_WIDTH; ++block) {
             uint8_t val = bytes[block];
             for (int bit = 0; bit < 8; ++bit) {
-                if ((val >> bit) & 1) {
+                if ((val >> bit) & 1)
                     state.bits[byte_idx * 8 + bit] |= (SliceWord(1) << block);
-                }
             }
         }
     }
@@ -394,131 +273,98 @@ void sub_bytes(BitSliceState& state) noexcept {
 
 void inv_sub_bytes(BitSliceState& state) noexcept {
     uint8_t bytes[SLICE_WIDTH];
-
     for (int byte_idx = 0; byte_idx < 16; ++byte_idx) {
         std::memset(bytes, 0, SLICE_WIDTH);
         for (int bit = 0; bit < 8; ++bit) {
             SliceWord word = state.bits[byte_idx * 8 + bit];
             for (size_t block = 0; block < SLICE_WIDTH; ++block) {
-                if ((word >> block) & 1) {
-                    bytes[block] |= (1u << bit);
-                }
+                if ((word >> block) & 1) bytes[block] |= (1u << bit);
             }
         }
-
-        for (size_t b = 0; b < SLICE_WIDTH; ++b) {
-            bytes[b] = gf::inv_sbox(bytes[b]);
-        }
-
-        for (int bit = 0; bit < 8; ++bit) {
-            state.bits[byte_idx * 8 + bit] = 0;
-        }
+        for (size_t b = 0; b < SLICE_WIDTH; ++b) bytes[b] = gf::inv_sbox(bytes[b]);
+        for (int bit = 0; bit < 8; ++bit) state.bits[byte_idx * 8 + bit] = 0;
         for (size_t block = 0; block < SLICE_WIDTH; ++block) {
             uint8_t val = bytes[block];
             for (int bit = 0; bit < 8; ++bit) {
-                if ((val >> bit) & 1) {
+                if ((val >> bit) & 1)
                     state.bits[byte_idx * 8 + bit] |= (SliceWord(1) << block);
-                }
             }
         }
     }
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  ShiftRows
-// ═══════════════════════════════════════════════════════════════
+// ---- ShiftRows ----
+// 因为现在 bits[i*8..i*8+7] 对应的是逻辑字节 i，所以直接按字节索引交换就行
+// （之前踩过一个坑：pack 里写了 15-i 的逆序布局，导致这里全乱套，已修）
 
 void shift_rows(BitSliceState& state) noexcept {
-    // Row 1: left by 1 → bytes (1,5,9,13) → (5,9,13,1)
+    // Row 1: 字节 1,5,9,13 → 5,9,13,1
     {
         SliceWord tmp[8];
-        for (int b = 0; b < 8; ++b) tmp[b] = state.bits[1 * 8 + b];
-        for (int b = 0; b < 8; ++b) state.bits[1 * 8 + b] = state.bits[5 * 8 + b];
-        for (int b = 0; b < 8; ++b) state.bits[5 * 8 + b] = state.bits[9 * 8 + b];
-        for (int b = 0; b < 8; ++b) state.bits[9 * 8 + b] = state.bits[13 * 8 + b];
-        for (int b = 0; b < 8; ++b) state.bits[13 * 8 + b] = tmp[b];
+        for (int b = 0; b < 8; ++b) tmp[b] = state.bits[1*8 + b];
+        for (int b = 0; b < 8; ++b) state.bits[1*8 + b]  = state.bits[5*8 + b];
+        for (int b = 0; b < 8; ++b) state.bits[5*8 + b]  = state.bits[9*8 + b];
+        for (int b = 0; b < 8; ++b) state.bits[9*8 + b]  = state.bits[13*8 + b];
+        for (int b = 0; b < 8; ++b) state.bits[13*8 + b] = tmp[b];
     }
-
-    // Row 2: (2,6,10,14) → (10,14,2,6) — swap pairs
+    // Row 2: 两两交换
     {
-        for (int b = 0; b < 8; ++b) std::swap(state.bits[2 * 8 + b], state.bits[10 * 8 + b]);
-        for (int b = 0; b < 8; ++b) std::swap(state.bits[6 * 8 + b], state.bits[14 * 8 + b]);
+        for (int b = 0; b < 8; ++b) std::swap(state.bits[2*8 + b], state.bits[10*8 + b]);
+        for (int b = 0; b < 8; ++b) std::swap(state.bits[6*8 + b], state.bits[14*8 + b]);
     }
-
-    // Row 3: (3,7,11,15) → (15,3,7,11) — left by 3 = right by 1
+    // Row 3: 3,7,11,15 → 15,3,7,11 (左移3=右移1)
     {
         SliceWord tmp[8];
-        for (int b = 0; b < 8; ++b) tmp[b] = state.bits[15 * 8 + b];
-        for (int b = 0; b < 8; ++b) state.bits[15 * 8 + b] = state.bits[11 * 8 + b];
-        for (int b = 0; b < 8; ++b) state.bits[11 * 8 + b] = state.bits[7 * 8 + b];
-        for (int b = 0; b < 8; ++b) state.bits[7 * 8 + b] = state.bits[3 * 8 + b];
-        for (int b = 0; b < 8; ++b) state.bits[3 * 8 + b] = tmp[b];
+        for (int b = 0; b < 8; ++b) tmp[b] = state.bits[15*8 + b];
+        for (int b = 0; b < 8; ++b) state.bits[15*8 + b] = state.bits[11*8 + b];
+        for (int b = 0; b < 8; ++b) state.bits[11*8 + b] = state.bits[7*8 + b];
+        for (int b = 0; b < 8; ++b) state.bits[7*8 + b]  = state.bits[3*8 + b];
+        for (int b = 0; b < 8; ++b) state.bits[3*8 + b]  = tmp[b];
     }
 }
 
 void inv_shift_rows(BitSliceState& state) noexcept {
-    // Row 1: left by 3 = right by 1 (undo left-by-1 shift)
+    // Row 1: undone
     {
         SliceWord tmp[8];
-        for (int b = 0; b < 8; ++b) tmp[b] = state.bits[1 * 8 + b];
-        for (int b = 0; b < 8; ++b) state.bits[1 * 8 + b] = state.bits[13 * 8 + b];
-        for (int b = 0; b < 8; ++b) state.bits[13 * 8 + b] = state.bits[9 * 8 + b];
-        for (int b = 0; b < 8; ++b) state.bits[9 * 8 + b] = state.bits[5 * 8 + b];
-        for (int b = 0; b < 8; ++b) state.bits[5 * 8 + b] = tmp[b];
+        for (int b = 0; b < 8; ++b) tmp[b] = state.bits[1*8 + b];
+        for (int b = 0; b < 8; ++b) state.bits[1*8 + b]  = state.bits[13*8 + b];
+        for (int b = 0; b < 8; ++b) state.bits[13*8 + b] = state.bits[9*8 + b];
+        for (int b = 0; b < 8; ++b) state.bits[9*8 + b]  = state.bits[5*8 + b];
+        for (int b = 0; b < 8; ++b) state.bits[5*8 + b]  = tmp[b];
     }
     // Row 2: swap back
     {
-        for (int b = 0; b < 8; ++b) std::swap(state.bits[2 * 8 + b], state.bits[10 * 8 + b]);
-        for (int b = 0; b < 8; ++b) std::swap(state.bits[6 * 8 + b], state.bits[14 * 8 + b]);
+        for (int b = 0; b < 8; ++b) std::swap(state.bits[2*8 + b], state.bits[10*8 + b]);
+        for (int b = 0; b < 8; ++b) std::swap(state.bits[6*8 + b], state.bits[14*8 + b]);
     }
-    // Row 3: left by 1 (undo left-by-3)
+    // Row 3: undone
     {
         SliceWord tmp[8];
-        for (int b = 0; b < 8; ++b) tmp[b] = state.bits[3 * 8 + b];
-        for (int b = 0; b < 8; ++b) state.bits[3 * 8 + b] = state.bits[7 * 8 + b];
-        for (int b = 0; b < 8; ++b) state.bits[7 * 8 + b] = state.bits[11 * 8 + b];
-        for (int b = 0; b < 8; ++b) state.bits[11 * 8 + b] = state.bits[15 * 8 + b];
-        for (int b = 0; b < 8; ++b) state.bits[15 * 8 + b] = tmp[b];
+        for (int b = 0; b < 8; ++b) tmp[b] = state.bits[3*8 + b];
+        for (int b = 0; b < 8; ++b) state.bits[3*8 + b]  = state.bits[7*8 + b];
+        for (int b = 0; b < 8; ++b) state.bits[7*8 + b]  = state.bits[11*8 + b];
+        for (int b = 0; b < 8; ++b) state.bits[11*8 + b] = state.bits[15*8 + b];
+        for (int b = 0; b < 8; ++b) state.bits[15*8 + b] = tmp[b];
     }
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  MixColumns — Column-wise GF(2^8) matrix multiply
-// ═══════════════════════════════════════════════════════════════
-//
-// Each column [s0,s1,s2,s3] is multiplied by:
-//   [2 3 1 1]    s0' = 2*s0 ⊕ 3*s1 ⊕ s2 ⊕ s3
-//   [1 2 3 1]    s1' = s0 ⊕ 2*s1 ⊕ 3*s2 ⊕ s3
-//   [1 1 2 3]    s2' = s0 ⊕ s1 ⊕ 2*s2 ⊕ 3*s3
-//   [3 1 1 2]    s3' = 3*s0 ⊕ s1 ⊕ s2 ⊕ 2*s3
+// ---- MixColumns ----
+// 列混合的矩阵乘： [2 3 1 1; 1 2 3 1; 1 1 2 3; 3 1 1 2]
+// s0' = 2*s0 ⊕ 3*s1 ⊕ 1*s2 ⊕ 1*s3 = xtime(s0) ⊕ (s1⊕xtime(s1)) ⊕ s2 ⊕ s3
+// 这里的关键是 xtime 在 bit-sliced 域里怎么算——见 xtime_slice
 
 namespace {
 
-// Mix one column in bit-sliced form.
-// col: 4 bytes × 8 bit-slices = 32 SliceWords
-// The 4 bytes are at indices col*4+0, col*4+1, col*4+2, col*4+3
-//
-// We need to compute:
-//   s0' = xtime(s0) ⊕ (s1 ⊕ xtime(s1)) ⊕ s2 ⊕ s3          // 2*s0 ⊕ 3*s1 ⊕ s2 ⊕ s3
-//   s1' = s0 ⊕ xtime(s1) ⊕ (s2 ⊕ xtime(s2)) ⊕ s3          // s0 ⊕ 2*s1 ⊕ 3*s2 ⊕ s3
-//   s2' = s0 ⊕ s1 ⊕ xtime(s2) ⊕ (s3 ⊕ xtime(s3))          // s0 ⊕ s1 ⊕ 2*s2 ⊕ 3*s3
-//   s3' = (s0 ⊕ xtime(s0)) ⊕ s1 ⊕ s2 ⊕ xtime(s3)          // 3*s0 ⊕ s1 ⊕ s2 ⊕ 2*s3
-//
-// In GF(2^8): xtime(a) = a << 1 ⊕ (a & 0x80 ? 0x1B : 0)
-// 3*a = a ⊕ xtime(a)
-
-// xtime in bit-sliced form:
-// For byte bits b7..b0, xtime produces xt7..xt0:
+// xtime 的 bit-sliced 版本：乘以 x 在 GF(2^8) 中，模 x^8+x^4+x^3+x+1
+// 推导：x*a = a<<1，如果 a7=1 则异或 0x1B
+// 所以输出 bit 和输入 bit 的关系是线性的：
 //   xt0 = b7
-//   xt1 = b0 ⊕ b7
+//   xt1 = b0 ^ b7     (b0 移到了 bit1，加上反馈 b7)
 //   xt2 = b1
-//   xt3 = b2 ⊕ b7
-//   xt4 = b3 ⊕ b7
-//   xt5 = b4
-//   xt6 = b5
-//   xt7 = b6
-// (from the AES polynomial x^8 + x^4 + x^3 + x + 1)
-
+//   xt3 = b2 ^ b7     (b2→b3 加上反馈，因为 0x1B = 00011011，反馈在 bit4,3,1,0)
+//   实际上 0x1B = x^4+x^3+x+1，所以反馈打到 bit4, bit3, bit1, bit0
+//   也就是 xt3 = b2 ^ b7, xt4 = b3 ^ b7, xt1 = b0 ^ b7, xt0 = b7
 void xtime_slice(SliceWord* src, SliceWord* dst) noexcept {
     SliceWord b0=src[0], b1=src[1], b2=src[2], b3=src[3];
     SliceWord b4=src[4], b5=src[5], b6=src[6], b7=src[7];
@@ -532,20 +378,14 @@ void xtime_slice(SliceWord* src, SliceWord* dst) noexcept {
     dst[7] = b6;
 }
 
+// 处理一列（4个字节 × 8个bit-slice = 32个SliceWord）
 void mix_column(BitSliceState& state, int col) noexcept {
-    // Pointers to the 4 bytes' bit-slices
     SliceWord* s[4];
-    for (int i = 0; i < 4; ++i) {
-        s[i] = &state.bits[(col * 4 + i) * 8];
-    }
+    for (int i = 0; i < 4; ++i) s[i] = &state.bits[(col * 4 + i) * 8];
 
-    // Compute xtime for all 4 bytes
     SliceWord xt[4][8];
-    for (int i = 0; i < 4; ++i) {
-        xtime_slice(s[i], xt[i]);
-    }
+    for (int i = 0; i < 4; ++i) xtime_slice(s[i], xt[i]);
 
-    // Compute new values
     SliceWord tmp[4][8];
     for (int b = 0; b < 8; ++b) {
         tmp[0][b] = xt[0][b] ^ s[1][b] ^ xt[1][b] ^ s[2][b] ^ s[3][b];
@@ -553,33 +393,16 @@ void mix_column(BitSliceState& state, int col) noexcept {
         tmp[2][b] = s[0][b] ^ s[1][b] ^ xt[2][b] ^ s[3][b] ^ xt[3][b];
         tmp[3][b] = s[0][b] ^ xt[0][b] ^ s[1][b] ^ s[2][b] ^ xt[3][b];
     }
-
-    // Write back
-    for (int i = 0; i < 4; ++i) {
-        for (int b = 0; b < 8; ++b) {
+    for (int i = 0; i < 4; ++i)
+        for (int b = 0; b < 8; ++b)
             s[i][b] = tmp[i][b];
-        }
-    }
 }
 
-// Inverse MixColumns matrix:
-//   [14 11 13  9]
-//   [ 9 14 11 13]
-//   [13  9 14 11]
-//   [11 13  9 14]
-// s0' = 14*s0 ⊕ 11*s1 ⊕ 13*s2 ⊕ 9*s3
-
+// 逆 MixColumns: [14 11 13 9; 9 14 11 13; 13 9 14 11; 11 13 9 14]
+// 系数 9,11,13,14 通过 xtime 叠加实现
 void inv_mix_column(BitSliceState& state, int col) noexcept {
     SliceWord* s[4];
-    for (int i = 0; i < 4; ++i) {
-        s[i] = &state.bits[(col * 4 + i) * 8];
-    }
-
-    // For inverse MixColumns, we need 9*a, 11*a, 13*a, 14*a for each column byte.
-    // 9*a  = xtime(xtime(xtime(a))) ⊕ a
-    // 11*a = xtime(xtime(xtime(a))) ⊕ xtime(a) ⊕ a
-    // 13*a = xtime(xtime(xtime(a))) ⊕ xtime(xtime(a)) ⊕ a
-    // 14*a = xtime(xtime(xtime(a))) ⊕ xtime(xtime(a)) ⊕ xtime(a)
+    for (int i = 0; i < 4; ++i) s[i] = &state.bits[(col * 4 + i) * 8];
 
     SliceWord xt[4][8], xt2[4][8], xt3[4][8];
     for (int i = 0; i < 4; ++i) {
@@ -588,7 +411,8 @@ void inv_mix_column(BitSliceState& state, int col) noexcept {
         xtime_slice(xt2[i], xt3[i]);
     }
 
-    // Precompute 9a, 11a, 13a, 14a for each byte
+    // 9a = xt3(a) ^ a, 11a = xt3(a) ^ xt(a) ^ a
+    // 13a = xt3(a) ^ xt2(a) ^ a, 14a = xt3(a) ^ xt2(a) ^ xt(a)
     SliceWord m9[4][8], m11[4][8], m13[4][8], m14[4][8];
     for (int i = 0; i < 4; ++i) {
         for (int b = 0; b < 8; ++b) {
@@ -606,87 +430,66 @@ void inv_mix_column(BitSliceState& state, int col) noexcept {
         tmp[2][b] = m13[0][b] ^ m9[1][b]  ^ m14[2][b] ^ m11[3][b];
         tmp[3][b] = m11[0][b] ^ m13[1][b] ^ m9[2][b]  ^ m14[3][b];
     }
-
-    for (int i = 0; i < 4; ++i) {
-        for (int b = 0; b < 8; ++b) {
+    for (int i = 0; i < 4; ++i)
+        for (int b = 0; b < 8; ++b)
             s[i][b] = tmp[i][b];
-        }
-    }
 }
 
 } // anonymous namespace
 
 void mix_columns(BitSliceState& state) noexcept {
-    for (int col = 0; col < 4; ++col) {
-        mix_column(state, col);
-    }
+    for (int col = 0; col < 4; ++col) mix_column(state, col);
 }
 
 void inv_mix_columns(BitSliceState& state) noexcept {
-    for (int col = 0; col < 4; ++col) {
-        inv_mix_column(state, col);
-    }
+    for (int col = 0; col < 4; ++col) inv_mix_column(state, col);
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  AddRoundKey
-// ═══════════════════════════════════════════════════════════════
+// ---- AddRoundKey ----
+// 轮密钥的每个 byte 要异或到所有 8 个块的对应 byte 上。
+// 在 bit-sliced 域里就是：key 某 bit 为 1 → 翻转整个 SliceWord。
 
 void add_round_key(BitSliceState& state,
                    std::span<const uint8_t, BLOCK_BYTES> key) noexcept {
-    // XOR key bytes into each block's bytes
-    // For each byte position j (0..15), key byte key[j] applies to all blocks
     for (int byte_idx = 0; byte_idx < 16; ++byte_idx) {
         uint8_t k = key[byte_idx];
         for (int bit = 0; bit < 8; ++bit) {
-            if ((k >> bit) & 1) {
-                state.bits[byte_idx * 8 + bit] ^= ~SliceWord(0);
-            }
+            if ((k >> bit) & 1) state.bits[byte_idx * 8 + bit] ^= 0xFF;
         }
     }
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  Full AES Encryption / Decryption
-// ═══════════════════════════════════════════════════════════════
+// ---- 完整的 bit-sliced 加密/解密 ----
 
 void encrypt_blocks(uint8_t* blocks,
                     std::span<const std::array<uint8_t, BLOCK_BYTES>, 11> round_keys) noexcept {
     auto state = pack(std::span<const uint8_t, SLICE_BYTES>(blocks, SLICE_BYTES));
-
     add_round_key(state, round_keys[0]);
-
     for (int round = 1; round < 10; ++round) {
         sub_bytes(state);
         shift_rows(state);
         mix_columns(state);
         add_round_key(state, round_keys[round]);
     }
-
     sub_bytes(state);
     shift_rows(state);
     add_round_key(state, round_keys[10]);
-
     unpack(state, std::span<uint8_t, SLICE_BYTES>(blocks, SLICE_BYTES));
 }
 
 void decrypt_blocks(uint8_t* blocks,
                     std::span<const std::array<uint8_t, BLOCK_BYTES>, 11> round_keys) noexcept {
     auto state = pack(std::span<const uint8_t, SLICE_BYTES>(blocks, SLICE_BYTES));
-
     add_round_key(state, round_keys[10]);
     inv_shift_rows(state);
     inv_sub_bytes(state);
-
     for (int round = 9; round >= 1; --round) {
         add_round_key(state, round_keys[round]);
         inv_mix_columns(state);
         inv_shift_rows(state);
         inv_sub_bytes(state);
     }
-
     add_round_key(state, round_keys[0]);
-
     unpack(state, std::span<uint8_t, SLICE_BYTES>(blocks, SLICE_BYTES));
 }
 

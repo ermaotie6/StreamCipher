@@ -1,4 +1,5 @@
-// File pipeline — streaming file encryption/decryption
+// pipeline.cpp — 文件级加解密管道
+// 256 KiB 内部缓冲 + StreamProcessor，边读边处理边写，O(1) 内存
 #include "streamcipher/stream/pipeline.hpp"
 #include <fstream>
 #include <vector>
