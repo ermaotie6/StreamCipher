@@ -87,47 +87,47 @@ ctest --test-dir build/dev --output-on-failure
 
 ```text
 StreamCipher/
-	apps/                                   # 命令行程序
-		main.cpp                        # 进程入口与异常处理
-		options.cpp                     # 命令行参数解析
-		commands.cpp                    # 文件操作与基准命令
-	include/streamcipher/                   # 库的公共头文件
-		streamcipher.hpp                # 公共接口总入口
-		core/                           # AES、有限域与密码上下文接口
-		stream/                         # 流处理与文件接口
-		simd/                           # CPU 能力与 AES-NI 接口
-		memory/                         # 内存池、视图与清理工具
-	src/                                    # 库的内部实现
-		core/                           # 密码算法与消息状态
-			cipher.cpp              # CTR/GCM 状态机
-			parameters.cpp          # 模式参数与长度校验
-			aes.cpp                 # 标量 AES 与位切片封装
-			aes_dispatch.cpp        # 独立 AES fast 接口分派
-			bitslice.cpp            # 八块位切片 AES
-			gf.cpp                  # 有限域批量运算
-			ghash.cpp               # GCM 认证计算
-		stream/                         # 流与文件适配
-			stream.cpp              # 原地处理和一次性接口
-			pipeline.cpp            # 文件分块 I/O 与处理编排
-		io/                             # 输出事务
-			output_transaction.hpp  # 暂存文件与成功后发布
-		detail/                         # 内部认证比较与清理工具
-		simd/                           # CPU 能力检测与 AES-NI 实现
-		memory/                         # 内存清理实现
-	tests/                                  # 单元、回归、CLI 和互操作测试
-		consumer/                       # 独立 CMake 消费项目
-	benchmarks/                             # AES、有限域和流处理基准
-	examples/                               # 文件加解密示例
-	docs/                                   # 技术文档
-		examples/                       # 可编译的 SDK 示例
-		decisions/                      # 架构决策记录
-		history/                        # 历史资料
-	cmake/                                  # 平台检测与 CMake 包配置
-	scripts/                                # 构建、打包和检查脚本
-	CMakeLists.txt                          # 项目构建入口
-	CMakePresets.json                       # CMake 构建预设
-	README.md                               # 项目介绍与快速开始
-	LICENSE                                 # MIT 许可证
+├── apps/                               # 命令行程序
+│   ├── main.cpp                        # 进程入口与异常处理
+│   ├── options.cpp                     # 命令行参数解析
+│   └── commands.cpp                    # 文件操作与基准命令
+├── include/streamcipher/               # 库的公共头文件
+│   ├── streamcipher.hpp                # 公共接口总入口
+│   ├── core/                           # AES、有限域与密码上下文接口
+│   ├── stream/                         # 流处理与文件接口
+│   ├── simd/                           # CPU 能力与 AES-NI 接口
+│   └── memory/                         # 内存池、视图与清理工具
+├── src/                                # 库的内部实现
+│   ├── core/                           # 密码算法与消息状态
+│   │   ├── cipher.cpp                  # CTR/GCM 状态机
+│   │   ├── parameters.cpp              # 模式参数与长度校验
+│   │   ├── aes.cpp                     # 标量 AES 与位切片封装
+│   │   ├── aes_dispatch.cpp            # 独立 AES fast 接口分派
+│   │   ├── bitslice.cpp                # 八块位切片 AES
+│   │   ├── gf.cpp                      # 有限域批量运算
+│   │   └── ghash.cpp                   # GCM 认证计算
+│   ├── stream/                         # 流与文件适配
+│   │   ├── stream.cpp                  # 原地处理和一次性接口
+│   │   └── pipeline.cpp                # 文件分块 I/O 与处理编排
+│   ├── io/                             # 输出事务
+│   │   └── output_transaction.hpp      # 暂存文件与成功后发布
+│   ├── detail/                         # 内部认证比较与清理工具
+│   ├── simd/                           # CPU 能力检测与 AES-NI 实现
+│   └── memory/                         # 内存清理实现
+├── tests/                              # 单元、回归、CLI 和互操作测试
+│   └── consumer/                       # 独立 CMake 消费项目
+├── benchmarks/                         # AES、有限域和流处理基准
+├── examples/                           # 文件加解密示例
+├── docs/                               # 技术文档
+│   ├── examples/                       # 可编译的 SDK 示例
+│   ├── decisions/                      # 架构决策记录
+│   └── history/                        # 历史资料
+├── cmake/                              # 平台检测与 CMake 包配置
+├── scripts/                            # 构建、打包和检查脚本
+├── CMakeLists.txt                      # 项目构建入口
+├── CMakePresets.json                   # CMake 构建预设
+├── README.md                           # 项目介绍与快速开始
+└── LICENSE                             # MIT 许可证
 ```
 
 文件处理依次经过 `FilePipeline`、`StreamProcessor` 和 `CipherCtx`；输出事务在 GCM 认证成功后发布解密结果。AES 使用运行时硬件分派并保留软件回退。详细设计见[架构与设计](docs/architecture.md)。
