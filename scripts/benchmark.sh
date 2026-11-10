@@ -1,26 +1,18 @@
 #!/bin/bash
-# StreamCipher benchmark runner
 set -euo pipefail
-
-BUILD_DIR="${1:-build}"
-
-BENCH_DIR="$BUILD_DIR/benchmarks"
-if [ ! -d "$BENCH_DIR" ]; then
-    echo "Benchmarks not built. Run scripts/build.sh first."
-    exit 1
-fi
-
-echo "=== GF(2^8) Operations ==="
-"$BENCH_DIR/bench_gf"
-
-echo ""
-echo "=== AES-128 Encryption ==="
-"$BENCH_DIR/bench_aes"
-
-echo ""
-echo "=== Streaming Throughput ==="
-"$BENCH_DIR/bench_stream"
-
-echo ""
-echo "=== CLI Benchmark ==="
-"$BUILD_DIR/apps/scipher" benchmark
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+BUILD_DIR="${1:-$SOURCE_DIR/build/local}"
+CONFIG="${2:-Release}"
+for name in bench_gf bench_aes bench_stream; do
+    executable="$BUILD_DIR/benchmarks/$name"
+    if [[ ! -x "$executable" && ! -x "$executable.exe" ]]; then
+        executable="$BUILD_DIR/benchmarks/$CONFIG/$name"
+    fi
+    if [[ -x "$executable.exe" ]]; then executable="$executable.exe"; fi
+    if [[ ! -x "$executable" ]]; then
+        echo "Missing benchmark executable: $executable" >&2
+        exit 1
+    fi
+    "$executable"
+done

@@ -13,8 +13,10 @@ TEST_CASE("GF(2^8) multiplication — identity and zero", "[gf]") {
 }
 
 TEST_CASE("GF(2^8) multiplication — commutativity", "[gf]") {
-    for (uint8_t a = 0; a < 255; ++a) {
-        for (uint8_t b = 0; b < 255; ++b) {
+    for (unsigned i = 0; i < 256; ++i) {
+        const auto a = static_cast<GF8>(i);
+        for (unsigned j = 0; j < 256; ++j) {
+            const auto b = static_cast<GF8>(j);
             REQUIRE(mul(a, b) == mul(b, a));
         }
     }
@@ -49,7 +51,8 @@ TEST_CASE("GF(2^8) xtime", "[gf]") {
 }
 
 TEST_CASE("GF(2^8) xtime/mul consistency", "[gf]") {
-    for (uint8_t a = 0; a < 255; ++a) {
+    for (unsigned i = 0; i < 256; ++i) {
+        const auto a = static_cast<GF8>(i);
         REQUIRE(xtime(a) == mul(a, 0x02));
     }
 }
@@ -73,14 +76,16 @@ TEST_CASE("GF(2^8) S-box — matches known AES S-box", "[gf]") {
 }
 
 TEST_CASE("GF(2^8) S-box round-trip", "[gf]") {
-    for (uint8_t a = 0; a != 0; ++a) {
+    for (unsigned i = 0; i < 256; ++i) {
+        const auto a = static_cast<GF8>(i);
         REQUIRE(inv_sbox(sbox(a)) == a);
     }
     REQUIRE(inv_sbox(sbox(0)) == 0);
 }
 
 TEST_CASE("GF(2^8) mul3/mul9/mul11/mul13/mul14", "[gf]") {
-    for (uint8_t a = 0; a < 255; ++a) {
+    for (unsigned i = 0; i < 256; ++i) {
+        const auto a = static_cast<GF8>(i);
         REQUIRE(mul3(a)  == mul(a, 0x03));
         REQUIRE(mul9(a)  == mul(a, 0x09));
         REQUIRE(mul11(a) == mul(a, 0x0B));
@@ -108,4 +113,18 @@ TEST_CASE("Batch S-box", "[gf]") {
     for (int i = 0; i < 256; ++i) {
         REQUIRE(dst[i] == sbox(src[i]));
     }
+}
+
+TEST_CASE("GF batch functions support exact in-place buffers", "[gf]") {
+    std::array<GF8,256> data{}, factors{}, expected{};
+    for(size_t i=0;i<data.size();++i) { data[i]=static_cast<GF8>(i); factors[i]=0x53; expected[i]=mul(data[i],factors[i]); }
+    mul_batch(data.data(),data.data(),factors.data(),data.size());
+    REQUIRE(data==expected);
+    for(size_t i=0;i<data.size();++i) expected[i]=inv(data[i]);
+    inv_batch(data.data(),data.data(),data.size());
+    REQUIRE(data==expected);
+    auto original=data;
+    sbox_batch(data.data(),data.data(),data.size());
+    inv_sbox_batch(data.data(),data.data(),data.size());
+    REQUIRE(data==original);
 }

@@ -1,9 +1,11 @@
 // Benchmark: Streaming encryption throughput
 #include <benchmark/benchmark.h>
 #include "streamcipher/stream/stream.hpp"
+#include <algorithm>
 #include <vector>
 
 using namespace streamcipher::stream;
+namespace cipher = streamcipher::cipher;
 
 static constexpr uint8_t KEY[16] = {
     0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6,
@@ -67,5 +69,31 @@ static void BM_GCM_OneShot_1MiB(benchmark::State& state) {
     state.SetBytesProcessed(int64_t(state.iterations()) * SIZE);
 }
 BENCHMARK(BM_GCM_OneShot_1MiB);
+
+// Include context creation and finalization in each measurement. The same
+// fixed test nonce is reused only for benchmarking, never for real messages.
+static void BM_StreamMatrix(benchmark::State& state, cipher::Mode mode) {
+    const auto size = static_cast<size_t>(state.range(0));
+    const auto chunk_size = static_cast<size_t>(state.range(1));
+    std::vector<uint8_t> data(size);
+    for (size_t i = 0; i < size; ++i) data[i] = static_cast<uint8_t>(i);
+    for (auto _ : state) {
+        auto proc = StreamProcessor::create(cipher::Algorithm::AES_128, mode,
+            std::span<const uint8_t, 16>(KEY), std::span<const uint8_t, 12>(NONCE), true);
+        for (size_t off = 0; off < size; off += chunk_size) {
+            const auto chunk = std::min(chunk_size, size - off);
+            proc->process(std::span<uint8_t>(data.data() + off, chunk));
+        }
+        proc->finish();
+        benchmark::DoNotOptimize(data.data());
+        benchmark::ClobberMemory();
+    }
+    state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(size));
+}
+
+static void BM_CTR_StreamMatrix(benchmark::State& state) { BM_StreamMatrix(state, cipher::Mode::CTR); }
+static void BM_GCM_StreamMatrix(benchmark::State& state) { BM_StreamMatrix(state, cipher::Mode::GCM); }
+BENCHMARK(BM_CTR_StreamMatrix)->ArgsProduct({{16, 128, 4096, 1048576}, {17, 65536}});
+BENCHMARK(BM_GCM_StreamMatrix)->ArgsProduct({{16, 128, 4096, 1048576}, {17, 65536}});
 
 BENCHMARK_MAIN();

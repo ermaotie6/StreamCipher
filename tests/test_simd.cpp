@@ -37,7 +37,7 @@ TEST_CASE("Vec128 shift_bytes_left", "[simd]") {
 }
 
 TEST_CASE("CPU feature detection", "[simd]") {
-    // These are compile-time checks; at runtime they reflect the build config.
+    // These queries report runtime CPU/OS capability, independent of build flags.
     // Just verify they don't crash.
     REQUIRE_NOTHROW(has_sse41());
     REQUIRE_NOTHROW(has_avx2());

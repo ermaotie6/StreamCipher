@@ -5,13 +5,14 @@
 
 using namespace streamcipher;
 
-int main(int argc, char* argv[]) {
+int main(int argc, char* argv[]) try {
     if (argc != 3) {
         std::cerr << "Usage: " << argv[0] << " <input> <output>\n";
         return 1;
     }
 
-    // Fixed test key and nonce (in production, derive from password + KDF)
+    // Test values only. Real encryption needs a protected key and a nonce
+    // unique for every message encrypted with that key.
     constexpr uint8_t key[16] = {
         0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6,
         0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c
@@ -40,5 +41,8 @@ int main(int argc, char* argv[]) {
     auto bytes = pipe.encrypt_file(argv[1], argv[2], config);
     std::cout << "\rDone. " << bytes << " bytes written.\n";
 
-    return bytes > 0 ? 0 : 1;
+    return 0;
+} catch (const std::exception& error) {
+    std::cerr << "Error: " << error.what() << "\n";
+    return 1;
 }

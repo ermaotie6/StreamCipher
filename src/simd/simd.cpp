@@ -5,44 +5,60 @@
 
 #include "streamcipher/simd/simd.hpp"
 #include <cstring>
+#include "streamcipher/core/gf.hpp"
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+#include <intrin.h>
+#endif
 
-#ifdef __SSE4_1__
+#if defined(STREAMCIPHER_SIMD) && defined(__SSE4_1__)
 #include <smmintrin.h>
 #endif
-#ifdef __AVX2__
+#if defined(STREAMCIPHER_SIMD) && defined(__AVX2__)
 #include <immintrin.h>
 #endif
 
 namespace streamcipher::simd {
 
-// -- CPU 特性检测（编译时宏 + 返回值） --
+// -- CPU 特性检测（运行时缓存，AVX2 同时检查 OS 状态支持） --
 
-bool has_sse41() noexcept {
-#ifdef __SSE4_1__
-    return true;
-#else
-    return false;
+namespace {
+struct Features { bool sse41 = false, avx2 = false, aesni = false; };
+Features detect_features() noexcept {
+    Features f;
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+    int regs[4]{};
+    __cpuid(regs, 0);
+    const int max_leaf = regs[0];
+    if (max_leaf < 1) return f;
+    __cpuidex(regs, 1, 0);
+    f.sse41 = (regs[2] & (1 << 19)) != 0;
+    f.aesni = (regs[2] & (1 << 25)) != 0;
+    const bool os_avx = (regs[2] & (1 << 27)) && (regs[2] & (1 << 28));
+    if (os_avx && (_xgetbv(0) & 6) == 6 && max_leaf >= 7) {
+        __cpuidex(regs, 7, 0);
+        f.avx2 = (regs[1] & (1 << 5)) != 0;
+    }
+#elif (defined(__GNUC__) || defined(__clang__)) && (defined(__x86_64__) || defined(__i386__))
+    __builtin_cpu_init();
+    f.sse41 = __builtin_cpu_supports("sse4.1");
+    f.avx2 = __builtin_cpu_supports("avx2");
+    f.aesni = __builtin_cpu_supports("aes");
 #endif
+    return f;
 }
-bool has_avx2() noexcept {
-#ifdef __AVX2__
-    return true;
-#else
-    return false;
-#endif
+const Features& features() noexcept {
+    static const Features f = detect_features();
+    return f;
 }
-bool has_aesni() noexcept {
-#ifdef __AES__
-    return true;
-#else
-    return false;
-#endif
 }
+bool has_sse41() noexcept { return features().sse41; }
+bool has_avx2() noexcept { return features().avx2; }
+bool has_aesni() noexcept { return features().aesni; }
 
 // -- 128-bit 操作 --
 
 Vec128 xor128(const Vec128& a, const Vec128& b) noexcept {
-#ifdef __SSE4_1__
+#if defined(STREAMCIPHER_SIMD) && defined(__SSE4_1__)
     __m128i va = _mm_loadu_si128(reinterpret_cast<const __m128i*>(a.data));
     __m128i vb = _mm_loadu_si128(reinterpret_cast<const __m128i*>(b.data));
     __m128i vr = _mm_xor_si128(va, vb);
@@ -60,14 +76,7 @@ Vec128 gf_mul128(const Vec128& a, const Vec128& b) noexcept {
     // GF(2^8) lane-wise 乘法 —— 没有直接的 SIMD 指令，走标量循环
     Vec128 r;
     for (int i = 0; i < 16; ++i) {
-        uint8_t prod = 0, x = a.data[i], y = b.data[i];
-        for (int bit = 0; bit < 8; ++bit) {
-            prod ^= x & -(y & 1);
-            uint8_t carry = x & 0x80;
-            x = (x << 1) ^ (carry ? uint8_t(0x1B) : uint8_t(0));
-            y >>= 1;
-        }
-        r.data[i] = prod;
+        r.data[i] = gf::mul(a.data[i], b.data[i]);
     }
     return r;
 }
@@ -80,7 +89,7 @@ Vec128 shift_bytes_left(const Vec128& a, unsigned shift) noexcept {
 }
 
 Vec128 load128(const uint8_t* ptr) noexcept {
-#ifdef __SSE4_1__
+#if defined(STREAMCIPHER_SIMD) && defined(__SSE4_1__)
     Vec128 v;
     _mm_storeu_si128(reinterpret_cast<__m128i*>(v.data),
                      _mm_loadu_si128(reinterpret_cast<const __m128i*>(ptr)));
@@ -93,7 +102,7 @@ Vec128 load128(const uint8_t* ptr) noexcept {
 }
 
 void store128(uint8_t* ptr, const Vec128& v) noexcept {
-#ifdef __SSE4_1__
+#if defined(STREAMCIPHER_SIMD) && defined(__SSE4_1__)
     _mm_storeu_si128(reinterpret_cast<__m128i*>(ptr),
                      _mm_loadu_si128(reinterpret_cast<const __m128i*>(v.data)));
 #else
@@ -103,10 +112,9 @@ void store128(uint8_t* ptr, const Vec128& v) noexcept {
 
 // -- 256-bit 操作 (AVX2) --
 
-#ifdef STREAMCIPHER_SIMD
 
 Vec256 xor256(const Vec256& a, const Vec256& b) noexcept {
-#ifdef __AVX2__
+#if defined(STREAMCIPHER_SIMD) && defined(__AVX2__)
     __m256i va = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a.data));
     __m256i vb = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b.data));
     __m256i vr = _mm256_xor_si256(va, vb);
@@ -121,7 +129,7 @@ Vec256 xor256(const Vec256& a, const Vec256& b) noexcept {
 }
 
 Vec256 load256(const uint8_t* ptr) noexcept {
-#ifdef __AVX2__
+#if defined(STREAMCIPHER_SIMD) && defined(__AVX2__)
     Vec256 v;
     _mm256_storeu_si256(reinterpret_cast<__m256i*>(v.data),
                         _mm256_loadu_si256(reinterpret_cast<const __m256i*>(ptr)));
@@ -134,7 +142,7 @@ Vec256 load256(const uint8_t* ptr) noexcept {
 }
 
 void store256(uint8_t* ptr, const Vec256& v) noexcept {
-#ifdef __AVX2__
+#if defined(STREAMCIPHER_SIMD) && defined(__AVX2__)
     _mm256_storeu_si256(reinterpret_cast<__m256i*>(ptr),
                         _mm256_loadu_si256(reinterpret_cast<const __m256i*>(v.data)));
 #else
@@ -145,18 +153,10 @@ void store256(uint8_t* ptr, const Vec256& v) noexcept {
 Vec256 gf_mul256(const Vec256& a, const Vec256& b) noexcept {
     Vec256 r;
     for (int i = 0; i < 32; ++i) {
-        uint8_t prod = 0, x = a.data[i], y = b.data[i];
-        for (int bit = 0; bit < 8; ++bit) {
-            prod ^= x & -(y & 1);
-            uint8_t carry = x & 0x80;
-            x = (x << 1) ^ (carry ? uint8_t(0x1B) : uint8_t(0));
-            y >>= 1;
-        }
-        r.data[i] = prod;
+        r.data[i] = gf::mul(a.data[i], b.data[i]);
     }
     return r;
 }
 
-#endif // STREAMCIPHER_SIMD
 
 } // namespace streamcipher::simd

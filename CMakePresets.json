@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "cmakeMinimumRequired": {"major": 3, "minor": 20, "patch": 0},
+  "configurePresets": [
+    {"name": "base", "hidden": true, "generator": "Ninja", "binaryDir": "${sourceDir}/build/preset-${presetName}", "cacheVariables": {"CMAKE_BUILD_TYPE": "Release", "STREAMCIPHER_BUILD_BENCHMARKS": "OFF"}},
+    {"name": "release", "inherits": "base", "displayName": "Release and tests"},
+    {"name": "debug", "inherits": "base", "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug"}},
+    {"name": "software", "inherits": "base", "cacheVariables": {"STREAMCIPHER_USE_AESNI": "OFF", "STREAMCIPHER_USE_SIMD": "OFF"}},
+    {"name": "shared", "inherits": "base", "cacheVariables": {"BUILD_SHARED_LIBS": "ON"}},
+    {"name": "asan", "inherits": "base", "cacheVariables": {"STREAMCIPHER_ENABLE_ASAN": "ON"}},
+    {"name": "minimal", "inherits": "base", "cacheVariables": {"STREAMCIPHER_BUILD_TESTS": "OFF", "STREAMCIPHER_BUILD_APPS": "OFF", "STREAMCIPHER_BUILD_EXAMPLES": "OFF", "STREAMCIPHER_FETCH_DEPENDENCIES": "OFF"}}
+  ],
+  "buildPresets": [
+    {"name": "release", "configurePreset": "release"},
+    {"name": "debug", "configurePreset": "debug"},
+    {"name": "software", "configurePreset": "software"},
+    {"name": "shared", "configurePreset": "shared"},
+    {"name": "asan", "configurePreset": "asan"},
+    {"name": "minimal", "configurePreset": "minimal"}
+  ],
+  "testPresets": [
+    {"name": "release", "configurePreset": "release", "output": {"outputOnFailure": true}},
+    {"name": "debug", "configurePreset": "debug", "output": {"outputOnFailure": true}},
+    {"name": "software", "configurePreset": "software", "output": {"outputOnFailure": true}},
+    {"name": "shared", "configurePreset": "shared", "output": {"outputOnFailure": true}},
+    {"name": "asan", "configurePreset": "asan", "output": {"outputOnFailure": true}}
+  ]
+}

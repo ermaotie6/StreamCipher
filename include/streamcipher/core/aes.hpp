@@ -53,18 +53,18 @@ void decrypt_ecb(std::span<uint8_t, BLOCK_SIZE> block,
 
 /// Encrypt using bit-sliced path (scalar SIMD-within-a-register fallback).
 /// @param blocks    Pointer to N * 16 bytes
-/// @param count     Number of blocks (must be multiple of bitslice::SLICE_WIDTH)
+/// @param count     Number of blocks (partial slices use the scalar path)
 /// @param key       16-byte key
 void encrypt_bitsliced(uint8_t* blocks, size_t count,
                        std::span<const uint8_t, KEY_SIZE> key) noexcept;
 
 // ── Hardware-accelerated ────────────────────────────────────
 
-/// Encrypt using AES-NI if available, scalar fallback otherwise.
+/// Encrypt using AES-NI if available, bit-sliced/scalar fallback otherwise.
 void encrypt_fast(uint8_t* blocks, size_t count,
                   std::span<const uint8_t, KEY_SIZE> key) noexcept;
 
-/// Returns true if AES-NI is available at runtime.
+/// Returns true if this build enables AES-NI and the CPU supports it at runtime.
 [[nodiscard]] bool has_aesni() noexcept;
 
 } // namespace streamcipher::aes

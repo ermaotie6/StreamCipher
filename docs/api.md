@@ -1,197 +1,132 @@
-# StreamCipher API 参考
+# API参考
 
-## 命名空间: `streamcipher::gf`
+精确类型、固定span长度、默认参数与 `noexcept` 以 `include/streamcipher/` 下的公共头为准。本页维护使用契约，不复制整份头文件声明；总入口为 `streamcipher.hpp`。完整可编译示例见 [开发使用](user-guide.zh-CN.md)，资源和目录信任边界见 [架构](architecture.md)。
 
-有限域 GF(2⁸) 运算 — 纯位运算，常数时间。
+## 参数与长度：`core/parameters.hpp`
 
-| 函数 | 签名 | 说明 |
-|------|------|------|
-| `mul` | `constexpr GF8 mul(GF8 a, GF8 b)` | 两 GF(2⁸) 元素乘法 |
-| `inv` | `constexpr GF8 inv(GF8 a)` | 乘法逆元，基于费马小定理 a^254 |
-| `xtime` | `constexpr GF8 xtime(GF8 a)` | 乘以 x（MixColumns 中使用） |
-| `mul3` | `constexpr GF8 mul3(GF8 a)` | 乘以 0x03 = xtime(a) ⊕ a |
-| `mul9` | `constexpr GF8 mul9(GF8 a)` | 乘以 0x09 |
-| `mul11` | `constexpr GF8 mul11(GF8 a)` | 乘以 0x0b |
-| `mul13` | `constexpr GF8 mul13(GF8 a)` | 乘以 0x0d |
-| `mul14` | `constexpr GF8 mul14(GF8 a)` | 乘以 0x0e |
-| `sbox` | `constexpr GF8 sbox(GF8 a)` | AES S-box：GF 逆元 + 仿射变换，无查表 |
-| `inv_sbox` | `constexpr GF8 inv_sbox(GF8 a)` | 逆 S-box：逆仿射 + GF 逆元 |
-| `mul_batch` | `void mul_batch(GF8* d, const GF8* a, const GF8* b, size_t n)` | 批量乘法 |
-| `inv_batch` | `void inv_batch(GF8* d, const GF8* s, size_t n)` | 批量逆元 |
-| `sbox_batch` | `void sbox_batch(GF8* d, const GF8* s, size_t n)` | 批量 S-box |
-| `inv_sbox_batch` | `void inv_sbox_batch(GF8* d, const GF8* s, size_t n)` | 批量逆 S-box |
+命名空间 `streamcipher::cipher`：
 
-**常数**：`IRREDUCIBLE_POLY = 0x1B`（AES 不可约多项式 x⁸+x⁴+x³+x+1）
+| 符号 | 契约 |
+|---|---|
+| `Algorithm::AES_128` | 当前唯一算法；key为16字节 |
+| `Mode::CTR`、`Mode::GCM` | 流式支持模式；`Mode::ECB`仅保留枚举，工厂拒绝 |
+| `Direction::Encrypt`、`Direction::Decrypt` | 强类型方向；旧bool入口仍可用，true为加密 |
+| `KEY_SIZE / NONCE_SIZE / BLOCK_SIZE / TAG_SIZE` | 16 / 12 / 16 / 16字节 |
+| `ModeSpec` | `tag_size`、`initial_counter`、`max_payload` |
+| `mode_spec(mode)` | CTR为 `{0,0,2^36}`；GCM为 `{16,2,2^36−32}` |
+| `validate_parameters(algo,mode)` | 验证支持的算法和模式 |
+| `validate_length(mode,processed,additional)` | 在无整数回绕的前提下验证总载荷上限 |
+| `encrypted_size(mode,payload)` | CTR返回payload，GCM返回payload+16，验证载荷上限 |
+| `decrypted_size(mode,encoded)` | CTR返回encoded，GCM减16，验证截断和上限 |
+| `AuthenticationError` | 继承 `std::runtime_error`，高层GCM认证失败可按类型捕获 |
 
-## 命名空间: `streamcipher::bitslice`
+非法算法/模式/方向抛 `std::invalid_argument`；标签截断同样抛该类型。载荷超过计数器上限抛 `std::length_error`。空载荷合法。CTR计数器为 `nonce || uint32_be(counter)`，从0开始；GCM数据从2开始，固定96位nonce、空AAD、128位标签。
 
-位切片 AES —— 以机器字级位运算并行处理多个块。
+同一密钥下每次加密必须使用唯一nonce，库不维护跨对象使用历史。CTR不能检测错误密钥或篡改。文件仅保存原始CTR密文或GCM密文后附16字节标签，不包含密钥、nonce或模式。
 
-| 符号 | 说明 |
-|------|------|
-| `SLICE_WIDTH = 8` | 并行处理的块数 |
-| `BLOCK_BYTES = 16` | 每块 128 位 |
-| `SLICE_BYTES = SLICE_WIDTH × 16` | 一个切片的总字节数 (128) |
-| `SliceWord = uint8_t` | 位切片字类型（每字存 8 个块的一个 bit） |
-| `BitSliceState` | 128 个 SliceWord 的结构体，表示位切片化的 AES 状态 (`alignas(64)`) |
-| `pack(src)` | 将 8 个字节块转换为位切片表示 |
-| `unpack(state, dst)` | 将位切片表示恢复为字节块 |
-| `xor_state(a, b)` / `and_state(a, b)` / `not_state(a)` / `or_state(a, b)` | 状态级布尔运算 |
-| `sub_bytes(state)` | 位切片域 SubBytes |
-| `inv_sub_bytes(state)` | 位切片域逆 SubBytes |
-| `shift_rows(state)` | 位切片域 ShiftRows |
-| `inv_shift_rows(state)` | 位切片域逆 ShiftRows |
-| `mix_columns(state)` | 位切片域 MixColumns |
-| `inv_mix_columns(state)` | 位切片域逆 MixColumns |
-| `add_round_key(state, key)` | 位切片域 AddRoundKey |
-| `encrypt_blocks(blocks, round_keys)` | 位切片路径加密 8 个块 |
-| `decrypt_blocks(blocks, round_keys)` | 位切片路径解密 8 个块 |
+## 消息上下文：`core/cipher.hpp`
 
-## 命名空间: `streamcipher::aes`
+工厂 `cipher::create(algo,mode,key,nonce,bool encrypt=true)` 返回 `std::unique_ptr<CipherCtx>`；另有接受 `Direction` 的重载。key/nonce分别为固定16/12字节span，工厂持有自己的派生状态。
 
-AES-128 密码实现。
+| 方法 | 行为 |
+|---|---|
+| `update(input,output)` | 输入为字节span，输出容量至少等长；不要求16字节整块；只写输入长度 |
+| `finalize()` | 结束消息并计算GCM标签；幂等 |
+| `tag()` | GCM结束后返回16字节借用span；结束前或CTR返回空span |
+| `verify_tag(expected)` | 结束后比较完整16字节标签；过早、长度错误或不匹配返回false |
+| `algorithm()`、`mode()` | 查询配置 |
 
-| 函数 | 说明 |
-|------|------|
-| `expand_key(key)` | 从 16 字节密钥派生 11 个轮密钥 |
-| `encrypt_block(block, rk)` | 加密单个 128 位块（标量路径） |
-| `decrypt_block(block, rk)` | 解密单个 128 位块（标量路径） |
-| `encrypt_ecb(block, key)` | ECB 加密便捷封装 |
-| `decrypt_ecb(block, key)` | ECB 解密便捷封装 |
-| `encrypt_bitsliced(blocks, count, key)` | 位切片批量加密（含不足 8 个块的标量回退） |
-| `encrypt_fast(blocks, count, key)` | 快速路径：AES-NI（若可用）→ bit-sliced → 标量 |
-| `has_aesni()` | 运行时 AES-NI 检测 |
+`update`允许完全原地或不重叠缓冲，拒绝部分重叠及不足容量；检查在输出修改前完成。结束后即使空更新也抛 `std::logic_error`。上下文不可复制；工厂返回的对象由指针管理。标签span依赖对象寿命，需长期保存时自行复制。
 
-## 命名空间: `streamcipher::cipher`
+**底层GCM解密不会自动阻止候选明文输出。** 调用者必须在finalize后显式verify_tag，并在成功前隔离全部候选明文；需要自动暂存时使用下面的一次性或文件接口。
 
-密码模式抽象层。
+## 流与一次性：`stream/stream.hpp`
 
-### `class CipherCtx`
-持有密钥材料和模式状态的抽象密码上下文。
+命名空间 `streamcipher::stream`。`StreamProcessor::create(algo,mode,key,nonce,encrypt)`需要显式bool或Direction，返回unique_ptr，处理器不可复制。
 
-| 方法 | 说明 |
-|------|------|
-| `update(input, output)` | 处理一个数据块 |
-| `finalize()` | 完成操作（冲刷缓冲，GCM 模式下生成标签） |
-| `tag()` | 获取认证标签（仅 GCM） |
-| `algorithm()` / `mode()` | 查询当前上下文配置 |
+| 方法 | 行为 |
+|---|---|
+| `process(span<uint8_t>)` | 原地处理任意大小分块，保留跨调用的剩余密钥流 |
+| `finish()` | 幂等结束并计算标签；之后process抛logic_error |
+| `tag()`、`verify_tag(expected)` | 与CipherCtx相同的借用/认证语义 |
+| `bytes_processed()` | 成功处理的累计载荷字节数 |
 
-### 工厂函数
-```cpp
-auto ctx = streamcipher::cipher::create(algo, mode, key, nonce);
-```
+一次性函数参数顺序：
 
-支持的模式：
-- `Mode::CTR` — Counter 模式（流密码）
-- `Mode::GCM` — Galois/Counter Mode（认证加密）
-- `Mode::ECB` — Electronic Codebook（主要用于测试）
-
-## 命名空间: `streamcipher::stream`
-
-流式加解密框架。
-
-### `class StreamProcessor`
-高层流式加解密处理器，支持零拷贝原地操作。
-
-| 方法 | 说明 |
-|------|------|
-| `process(span<uint8_t>)` | 原地处理一个数据块 |
-| `finish()` | 标记流结束 |
-| `tag()` | 认证标签（仅 GCM） |
-| `bytes_processed()` | 已处理的总字节数 |
-| `create(algo, mode, key, nonce, encrypt)` | 工厂函数 |
-
-**设计要点**：
-- CTR 模式加密与解密为同一操作（密钥流异或），`encrypt` 参数不影响行为
-- 支持任意次数、任意大小的 `process()` 调用，分块无关（从绝对字节位置计算计数器）
-- 零拷贝：直接在传入的 `std::span<uint8_t>` 上原地修改
-
-### 便捷函数
-```cpp
+```text
 size_t encrypt_one_shot(algo, mode, plaintext, ciphertext, key, nonce);
 size_t decrypt_one_shot(algo, mode, ciphertext, plaintext, key, nonce);
 ```
-一次性加解密整个缓冲区（适用于小数据 / 测试）。GCM 模式返回时会在密文末尾追加 16 字节认证标签。
 
-## 命名空间: `streamcipher::pipeline`
+这两行是参数顺序示意；可编译声明含完整类型并位于公共头。返回输出字节数，0也可能成功。CTR需要等长容量；GCM加密容量至少payload+16，解密容量至少encoded−16。一次性接口支持完全或部分重叠输入输出。
 
-文件级加密管道。
+GCM解密使用O(n)内存暂存，验证尾部标签后才修改目标，失败抛AuthenticationError且目标保持原样；标签不足16或容量不足抛invalid_argument。GCM空明文加密仍输出16字节标签。原地process自身不复制用户块，不代表一次性GCM解密或文件I/O全程零拷贝。
 
-### `class FilePipeline`
-流式文件加解密器，支持进度回调。
+## 文件：`stream/pipeline.hpp`
 
-| 方法 | 说明 |
-|------|------|
-| `encrypt_file(input, output, config)` | 加密文件 |
-| `decrypt_file(input, output, config)` | 解密文件 |
-| `on_progress(fn)` | 设置进度回调 |
+命名空间 `streamcipher::pipeline`。构造 `FilePipeline(algo,mode,key,nonce)`时验证参数并复制key/nonce；不可复制、可移动。每次操作建立新密码上下文，但复用加密对象仍然会复用其nonce，调用方应为新消息配置唯一nonce。
 
-### `struct PipelineConfig`
-| 字段 | 默认值 | 说明 |
-|------|--------|------|
-| `chunk_size` | 1 MiB | I/O 分块大小 |
-| `parallel` | false | 多线程 CTR |
-| `threads` | 0（自动） | 线程数 |
-| `on_progress` | 无 | `void(uint64_t done, uint64_t total)` |
+| 方法 | 返回/语义 |
+|---|---|
+| `encrypt_file(input,output,config={})` | uint64_t输出字节数；GCM包括标签 |
+| `decrypt_file(input,output,config={})` | uint64_t明文字节数；GCM先验证再发布 |
+| `on_progress(fn)` | 设置默认进度回调 |
 
-**内部缓冲**：实际使用 256 KiB 内部缓冲区进行高效 I/O。
+`PipelineConfig`字段：
 
-## 命名空间: `streamcipher::simd`
+| 字段 | 默认与限制 |
+|---|---|
+| `chunk_size` | `DEFAULT_CHUNK_SIZE=1<<20`；0也用默认值；超出streamsize上限拒绝；小文件缩减分配 |
+| `parallel` | false；true抛invalid_argument |
+| `threads` | 0；非零抛invalid_argument |
+| `on_progress` | `std::function<void(uint64_t done,uint64_t total)>`，默认空；优先于对象回调 |
 
-SIMD 抽象层（架构无关）。
+回调参数仅包含载荷，不含标签；空载荷调用一次(0,0)。操作开始时复制配置和回调，回调中更改只影响之后的操作；回调抛异常取消当前操作并保留原目标。同一对象重入或移动后继续使用抛logic_error；回调不得移动/销毁当前正在调用它的对象。
 
-### 类型
-| 类型 | 说明 |
-|------|------|
-| `Vec128` | 128 位向量 (`alignas(16)`) |
-| `Vec256` | 256 位向量 (`alignas(32)`)，仅在 `STREAMCIPHER_SIMD` 下可用 |
+普通稳定输入、可信输出目录是前置条件。输入输出别名、输出符号链接和非普通输出会被拒绝。输出在目标同盘独占目录暂存，处理、认证、末尾检查和输出关闭成功后才重命名替换；异常尽力清理，原目标保留。可能抛出文件系统异常、I/O异常、runtime_error、认证及参数异常；资源分配也可能失败。
 
-| 函数 | 说明 |
-|------|------|
-| `xor128(a, b)` | 128 位按位异或（SSE4.1 下用 `_mm_xor_si128`） |
-| `gf_mul128(a, b)` | 通道级 GF(2⁸) 乘法 |
-| `load128(ptr)` / `store128(ptr, v)` | 非对齐加载/存储 |
-| `has_sse41()` / `has_avx2()` / `has_aesni()` | CPU 特性检测 |
+RAM为O(min(chunk,payload))（空输入仍有最小缓冲），磁盘暂存为O(output)。POSIX目录0700、文件0600；Windows依赖父目录私有ACL。没有恶意目录竞争、快照或断电恢复保证，崩溃可能留下候选明文。进度100%不表示发布成功。上述对象及SlabPool均不允许同对象并发操作。
 
-### 子命名空间 `streamcipher::simd::aesni`
-| 函数 | 对应指令 | 说明 |
-|------|----------|------|
-| `enc_round(state, rk)` | `_mm_aesenc_si128` | 一轮 AES 加密 |
-| `enc_round_last(state, rk)` | `_mm_aesenclast_si128` | 末轮加密（无 MixColumns） |
-| `dec_round(state, rk)` | `_mm_aesdec_si128` | 一轮 AES 解密 |
-| `dec_round_last(state, rk)` | `_mm_aesdeclast_si128` | 末轮解密 |
-| `expand_key_128(key, rk_buf)` | `_mm_aeskeygenassist_si128` | 密钥扩展 |
-| `encrypt_blocks(blocks, n, rk)` | — | 批量加密 |
-| `decrypt_blocks(blocks, n, rk)` | — | 批量解密 |
+## AES与位切片
 
-## 命名空间: `streamcipher::memory`
+| 头/命名空间 | 入口与约束 |
+|---|---|
+| `core/aes.hpp` / `aes` | `RoundKeys`为11×16字节；`expand_key(key)`返回调用方管理的轮密钥 |
+| 同上 | `encrypt_block/decrypt_block(block,rk)`标量单块；`encrypt_ecb/decrypt_ecb(block,key)`单块包装，无填充 |
+| 同上 | `encrypt_bitsliced(blocks,count,key)`处理count个16字节块，完整八块加标量尾块；`encrypt_fast`先尝试AES-NI |
+| 同上 | `has_aesni()`同时反映构建启用与CPU能力 |
+| `core/bitslice.hpp` / `bitslice` | SliceWord=uint8_t；SLICE_WIDTH=8，BLOCK_BYTES=16，BLOCK_BITS=128，SLICE_BYTES=128；BitSliceState按64字节对齐 |
+| 同上 | `pack/unpack`在128字节与位表示间转换；`xor_state/and_state/not_state/or_state`状态运算 |
+| 同上 | `sub_bytes/inv_sub_bytes`、`shift_rows/inv_shift_rows`、`mix_columns/inv_mix_columns`、`add_round_key`轮操作 |
+| 同上 | `encrypt_blocks/decrypt_blocks(blocks,round_keys)`恰好处理8块，密钥为11个16字节数组 |
 
-内存管理工具。
+低层裸指针接口要求调用者提供足够可读写的块存储；固定span长度也是调用方前置条件，不提供运行时容量恢复。SubBytes当前提取字节使用代数S-box，不是未验证实验电路。调用者返回值/副本中的轮密钥须自行管理与清理。
 
-### `template SlabPool<BlockSize, BlockCount>`
-固定大小 Slab 分配器（header-only）。
+## GF与SIMD
 
-| 方法 | 说明 |
-|------|------|
-| `alloc()` | 从池中分配一个块，池耗尽返回 `nullptr` |
-| `dealloc(ptr)` | 归还块到池 |
-| `capacity()` | 池中总块数 |
-| `used()` | 当前已使用块数 |
+`core/gf.hpp` / `streamcipher::gf`：GF8=uint8_t，IRREDUCIBLE_POLY=0x1B。constexpr工具为 `mul`、`inv`（0的约定结果为0）、`xtime`、`mul3/9/11/13/14`、`sbox/inv_sbox`。批量 `mul_batch(dst,a,b,n)`、`inv_batch/sbox_batch/inv_sbox_batch(dst,src,n)`使用调用方存储，支持完全原地；不承诺任意部分重叠。
 
-**实现细节**：预分配 `BlockSize × BlockCount` 字节的连续内存（`alignas(64)`），空闲块通过嵌入式链表管理。alloc/dealloc 均为 O(1)。
+`simd/simd.hpp` / `streamcipher::simd`：
 
-### 类型别名
-| 别名 | 块大小 | 块数 | 总大小 |
-|------|--------|------|--------|
-| `AESBlockPool` | 16 B | 16384 | 256 KiB |
-| `CtxBufferPool` | 64 B | 4096 | 256 KiB |
-| `SIMDBufferPool` | 32 B | 8192 | 256 KiB |
+| 类型/函数 | 语义 |
+|---|---|
+| `Vec128`、`Vec256` | 16/32字节data，alignas(16/32)；公共布局不随构建开关变化 |
+| `xor128/xor256` | 按位异或 |
+| `gf_mul128/gf_mul256` | 16/32字节通道独立GF(2^8)乘法 |
+| `load128/load256`、`store128/store256` | 无对齐要求，调用者提供足够16/32字节存储 |
+| `shift_bytes_left(a,shift)` | 16字节循环左旋，shift模16 |
+| `has_sse41/has_avx2/has_aesni` | CPU/OS能力，不代表该构建选择了对应实现 |
 
-### Span 工具函数
-| 函数 | 说明 |
-|------|------|
-| `is_aligned(span, alignment)` | 检查 span 起始地址是否对齐 |
-| `align_offset(span, alignment)` | 返回跳过的字节数以对齐 |
-| `split_at(span, offset)` | 将 span 在 offset 处一分为二 |
-| `take(span, n)` | 取出最多 n 个元素，返回 (已取, 剩余) |
-| `Chunker` | 固定大小分块迭代器 |
+`simd/aesni.hpp` / `simd::aesni`：`enc_round/enc_round_last/dec_round/dec_round_last`为单轮，`expand_key_128(key,out)`输出176字节；`encrypt_blocks/decrypt_blocks(blocks,count,keys)`使用同一套加密轮密钥，解密内部转换中间轮密钥。不可用时软件回退。单轮dec_round的rk按该轮指令语义提供；完整解密请用decrypt_blocks。
+
+## 内存工具
+
+`memory/secure.hpp`：`secure_zero(span<uint8_t>) noexcept`用volatile存储覆盖指定可写范围；不清除外部副本、寄存器、交换区或磁盘残留。
+
+`memory/pool.hpp`：`SlabPool<BlockSize,BlockCount=1024,BlockAlignment=alignof(std::max_align_t)>`为原始存储池，调用者负责构造/析构对象，池须长于所有分配。不复制、不移动、不线程安全，也不自动擦除。
+
+`alloc()`耗尽返回nullptr；`dealloc(ptr)`忽略空/外来/非槽起点/当前已释放指针；`capacity()`查询容量，`used()`查询已用数。对齐须为可支持指针的2幂，块大小/数量须为正且无容量溢出。步长至少容纳指针并按BlockAlignment向上取整，整个池至少64字节对齐。
+
+别名为AESBlockPool（16×16384）、CtxBufferPool（64×4096）、SIMDBufferPool（32×8192，对齐32）。这些乘积各为256KiB的槽存储，**不是sizeof(pool)**：分配标记、链表头、计数和填充另占空间。
+
+`memory/span_utils.hpp`：`is_aligned(span,alignment)`在alignment=0时false；`align_offset`返回要跳过的字节数，0对齐抛invalid_argument。`split_at(span,offset)`以元素数拆分，超界抛out_of_range；`take(span,n)`截断到可用元素，返回已取与剩余。`Chunker<T>(span,chunk_size)`要求非零，next返回下一片或空span，remaining/done查询进度。align_offset给出字节偏移，不保证该偏移在原span内。

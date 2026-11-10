@@ -9,6 +9,9 @@
 #include <cstddef>
 #include <span>
 #include <bit>
+#include <algorithm>
+#include <stdexcept>
+#include <utility>
 
 namespace streamcipher::memory {
 
@@ -17,13 +20,14 @@ namespace streamcipher::memory {
 /// Check if a span starts at an aligned address.
 template<typename T>
 [[nodiscard]] constexpr bool is_aligned(std::span<T> s, size_t alignment) noexcept {
-    return (reinterpret_cast<uintptr_t>(s.data()) % alignment) == 0;
+    return alignment != 0 && (reinterpret_cast<uintptr_t>(s.data()) % alignment) == 0;
 }
 
 /// Align a span's starting offset up to the next multiple of `alignment`.
 /// Returns the number of bytes to skip.
 template<typename T>
-[[nodiscard]] constexpr size_t align_offset(std::span<T> s, size_t alignment) noexcept {
+[[nodiscard]] constexpr size_t align_offset(std::span<T> s, size_t alignment) {
+    if (alignment == 0) throw std::invalid_argument("Alignment must be positive");
     auto addr = reinterpret_cast<uintptr_t>(s.data());
     auto misalignment = addr % alignment;
     return misalignment == 0 ? 0 : alignment - misalignment;
@@ -34,7 +38,8 @@ template<typename T>
 /// Split a span into two parts at `offset`.
 template<typename T>
 [[nodiscard]] constexpr std::pair<std::span<T>, std::span<T>>
-split_at(std::span<T> s, size_t offset) noexcept {
+split_at(std::span<T> s, size_t offset) {
+    if (offset > s.size()) throw std::out_of_range("Split offset exceeds span size");
     return {s.first(offset), s.subspan(offset)};
 }
 
@@ -51,7 +56,9 @@ template<typename T>
 class Chunker {
 public:
     explicit Chunker(std::span<T> data, size_t chunk_size)
-        : data_(data), chunk_size_(chunk_size) {}
+        : data_(data), chunk_size_(chunk_size) {
+        if (chunk_size == 0) throw std::invalid_argument("Chunk size must be positive");
+    }
 
     /// Get the next chunk. Returns empty span when done.
     [[nodiscard]] std::span<T> next() noexcept {

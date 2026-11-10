@@ -1,288 +1,145 @@
-# StreamCipher — 高性能流式对称加解密引擎
+# StreamCipher
 
-> 基于现代 C++20 的轻量级、跨平台、常数时间对称加密引擎
->
-> 面向云计算与物联网场景下海量数据实时安全传输
+StreamCipher 是一个使用 C++20 实现的 AES-128 流式加解密原型，提供可嵌入的库和文件命令行工具 `scipher`。项目支持 CTR 和 GCM 模式，适合研究流式处理、软件密码实现与硬件加速的工程权衡。
 
----
+项目尚未经过产品认证或完整侧信道审计。使用前请结合应用的安全要求评估其适用性。
 
-## 一、项目概述
+## 功能
 
-StreamCipher 是一套从底层代数理论出发、深度整合现代 C++ 特性的高性能对称加解密组件库。项目通过位切片（Bit-slicing）技术替代传统查表法，结合 C++20 `std::span` 零拷贝机制与 x86_64 SIMD/AES-NI 硬件加速，从底层解决了通用密码库在流式大文件处理场景中的内存消耗大、缓存命中率低、侧信道攻击面广等瓶颈问题。
+- **流式处理**：支持任意长度和分块边界，提供原地流接口和一次性内存接口。
+- **文件处理**：顺序分块读写，内存占用受分块大小限制；GCM 解密在认证成功后才发布输出。
+- **密码实现**：提供标量 AES、八块位切片实验路径，以及运行时 AES-NI 分派和软件回退。
+- **集成方式**：提供 CMake 库目标、可安装的包配置、公共头文件和示例。
 
-**项目定位**：学术创新项目 / 开源高性能密码库 / 命令行工具原型
+当前支持 16 字节密钥、12 字节 nonce、空 AAD 和 16 字节 GCM 标签。CTR 计数器从 0 开始，GCM 数据计数器从 2 开始。GCM 文件格式为密文后附标签；CTR 文件仅包含密文。文件不保存模式、密钥或 nonce。
 
-**技术栈**：C++20 / CMake 3.20+ / Catch2 / Google Benchmark / AES-NI / SSE4.1 / AVX2
+## 构建
 
----
+需要 C++20 编译器和 CMake 3.20 或更高版本。以下命令适用于已加载 Visual Studio 2022 x64 开发环境且安装 Ninja 的 PowerShell。Windows x64/MSVC 已验证；Linux、macOS 和 ARM 尚未实机验证。
 
-## 二、核心创新点
+仅构建库和命令行工具，不下载测试依赖：
 
-### 2.1 代数化 S-box — 零查表、常数时间
-
-传统 AES 实现依赖 256 字节预计算 S-box 查表，存在两个固有问题：
-- **缓存侧信道**：查表操作的缓存命中/缺失模式泄露密钥信息（Cache-timing attack）
-- **缓存污染**：256 字节的查表在流式处理中挤占 L1 数据缓存
-
-StreamCipher 通过代数推导完全消除了 S-box 查表：
-
-```
-S(x) = Affine(GF_inv(x))
+```powershell
+cmake -S . -B build/quickstart -G Ninja -DCMAKE_BUILD_TYPE=Release -DSTREAMCIPHER_BUILD_TESTS=OFF -DSTREAMCIPHER_BUILD_EXAMPLES=OFF -DSTREAMCIPHER_BUILD_BENCHMARKS=OFF -DSTREAMCIPHER_FETCH_DEPENDENCIES=OFF
+cmake --build build/quickstart --parallel 8
+.\build\quickstart\apps\scipher.exe --help
 ```
 
-其中 `GF_inv(x) = x^254` 通过二进制快速幂实现（14 次纯位运算 GF(2⁸) 乘法），`Affine` 仿射变换通过 `std::rotr` 位旋转实现。所有操作仅使用 AND/OR/XOR/NOT 位运算，固定执行 8 次循环迭代，无数据依赖分支。
+普通 PowerShell 中的工具链配置、离线依赖和其他构建选项见[开发与使用](docs/user-guide.zh-CN.md)。
 
-### 2.2 Bit-slicing 并行 — SIMD-within-a-register
+## 命令行使用
 
-将 8 个 128-bit AES 块重新排列为 128 个 bit-slice word，每个 word 包含 8 个块同一 bit 位置的值。SubBytes / ShiftRows / MixColumns / AddRoundKey 全部在 bit-sliced 域中以布尔电路形式执行，一次操作处理 8 个块。
+以下示例使用固定测试参数，仅用于演示。实际使用时须安全管理密钥，并为同一密钥下的每次加密使用唯一 nonce。
 
-### 2.3 零拷贝流式管道
+```powershell
+$key = '2b7e151628aed2a6abf7158809cf4f3c'
+$nonce = 'f0f1f2f3f4f5f6f7f8f9fafb'
+Set-Content -LiteralPath build/quickstart/input.txt -Value 'StreamCipher demo' -Encoding utf8
 
-所有公开 API 使用 C++20 `std::span<T>` 传参，全程零数据拷贝。流式处理器（StreamProcessor）和文件管道（FilePipeline）直接在用户提供的缓冲区上原地操作，内存开销恒定 O(1)，不随文件大小增长。
-
-### 2.4 三路执行路径
-
-```
-encrypt_fast()
-    ├── AES-NI 硬件路径  (x86_64 w/ __AES__)
-    ├── Bit-sliced 软件路径 (8 块并行, 常数时间)
-    └── 标量后备路径  (单块, 常数时间)
+.\build\quickstart\apps\scipher.exe encrypt build/quickstart/input.txt build/quickstart/encrypted.bin --mode gcm --key $key --nonce $nonce --no-progress
+.\build\quickstart\apps\scipher.exe decrypt build/quickstart/encrypted.bin build/quickstart/recovered.txt --mode gcm --key $key --nonce $nonce --no-progress
+(Get-FileHash -LiteralPath build/quickstart/input.txt).Hash -eq (Get-FileHash -LiteralPath build/quickstart/recovered.txt).Hash
 ```
 
----
+`--key` 和 `--nonce` 分别接受 32 个和 24 个十六进制字符。`--mode` 可选 `ctr` 或 `gcm`，默认 `ctr`；`--chunk-size` 可设置分块大小。成功退出码为 0，错误为非零。完整参数见 `scipher --help` 和[命令行说明](docs/user-guide.zh-CN.md#命令行)。
 
-## 三、项目结构
+## 作为库使用
 
-```
-streamcipher/
-├── include/streamcipher/          # 公共头文件
-│   ├── core/                      # 密码核心
-│   │   ├── gf.hpp                 # GF(2⁸) 纯位运算 (mul/inv/xtime/sbox)
-│   │   ├── bitslice.hpp           # Bit-slicing 数据结构与操作
-│   │   ├── aes.hpp                # AES-128 API
-│   │   └── cipher.hpp             # 密码模式抽象 (CTR/GCM/ECB)
-│   ├── stream/                    # 流式处理
-│   │   ├── stream.hpp             # StreamProcessor 接口
-│   │   └── pipeline.hpp           # FilePipeline 文件管道
-│   ├── simd/                      # 硬件加速
-│   │   ├── simd.hpp               # Vec128/Vec256 + SSE/AVX
-│   │   └── aesni.hpp              # AES-NI 指令封装
-│   └── memory/                    # 内存管理
-│       ├── pool.hpp               # SlabPool 固定大小分配器
-│       └── span_utils.hpp         # std::span 工具函数
-├── src/                           # 实现文件（镜像 include 结构）
-├── tests/                         # 单元测试 (Catch2, 4 套件, 67K+ 断言)
-├── benchmarks/                    # 性能基准 (Google Benchmark)
-├── examples/                      # 使用范例 (encrypt_file / decrypt_file)
-├── apps/                          # CLI 工具 (scipher)
-├── docs/                          # 文档
-│   ├── architecture.md            # 架构概述
-│   ├── api.md                     # API 参考
-│   └── implementation.md          # 详细实现文档
-├── cmake/                         # CMake 模块
-├── scripts/                       # 构建与基准脚本
-├── CMakeLists.txt                 # 顶层 CMake (C++20, x86_64 检测)
-├── README.md                      # 本文档
-└── LICENSE                        # MIT
+将源码作为子目录引入：
+
+```cmake
+add_subdirectory(path/to/StreamCipher)
+target_link_libraries(your_app PRIVATE streamcipher::streamcipher)
 ```
 
----
+或安装后通过 CMake 包使用：
 
-## 四、技术架构
-
-### 4.1 分层架构
-
-```
-┌──────────────────────────────────────────┐
-│  apps/       scipher CLI                  │  用户层
-├──────────────────────────────────────────┤
-│  stream/     StreamProcessor              │  模式层
-│              FilePipeline                 │
-├──────────────────────────────────────────┤
-│  core/       AES-128 加密/解密            │  密码核心
-│              Bit-slicing 轮操作            │
-│              GF(2⁸) 代数运算              │
-│              CTR / GCM (含 GHASH)         │
-├──────────────────────────────────────────┤
-│  simd/       SSE4.1 / AVX2 / AES-NI      │  硬件加速
-├──────────────────────────────────────────┤
-│  memory/     SlabPool / span_utils        │  内存管理
-└──────────────────────────────────────────┘
+```cmake
+find_package(streamcipher 0.1 CONFIG REQUIRED)
+target_link_libraries(your_app PRIVATE streamcipher::streamcipher)
 ```
 
-### 4.2 CTR 模式加解密数据流
+公共总入口为 `<streamcipher/streamcipher.hpp>`。内存、流和文件接口的完整示例见 [SDK 示例](docs/examples/)；参数、异常和生命周期约束见 [API 参考](docs/api.md)。库目标向消费者传播 C++20 要求，不承诺跨编译器的 C++ ABI 稳定性。
 
-```
-文件 → FilePipeline → StreamProcessor
-                         │
-              nonce+counter → AES encrypt → keystream
-                         │
-              keystream ⊕ plaintext → ciphertext
-                         │
-              输出文件 (流式, 无缓冲积压)
-```
+## 安全与使用边界
 
----
+- CTR 不提供认证，无法检测篡改或错误密钥；需要完整性保护时应使用 GCM。
+- 调用方负责密钥保管和 nonce 唯一性。库不生成或保存密钥及 nonce；命令行参数也可能被系统进程信息或命令历史记录。
+- 低层流式 GCM 解密会输出候选明文，调用方必须在认证成功前隔离这些数据。一次性和文件解密接口会先验证，再发布明文；文件认证失败时保留已有目标。
+- 文件接口要求稳定的普通输入文件和可信输出目录，需与输出大小相当的暂存磁盘空间。它不保证恶意目录竞争防护或崩溃恢复。
+- 当前不支持 AES-256、SM4、AAD、口令 KDF 或并行文件处理；旧版错误 GCM 格式不兼容当前实现，背景见[历史索引](docs/history/README.md)。
 
-## 五、测试验证
+## 测试
 
-### 5.1 测试结果
+在已配置 MSVC 和 Ninja 的环境中，可构建并运行默认测试：
 
-```
-$ ctest --test-dir build
-100% tests passed, 0 tests failed out of 4
+```powershell
+cmake -S . -B build/dev -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build/dev --parallel 8
+ctest --test-dir build/dev --output-on-failure
 ```
 
-| 测试套件 | 用例数 | 断言数 | 覆盖内容 |
-|----------|--------|--------|----------|
-| `gf` | 12 | 67,581 | GF(2⁸) 全运算 + S-box 全表验证 |
-| `aes` | 7 | 17+ | NIST 测试向量 + bit-sliced 批量往返 |
-| `stream` | 5 | 18 | CTR/GCM 流式 + 跨边界分块 |
-| `simd` | 4 | 8 | SIMD 向量操作 + CPU 特性 |
+测试需要 Catch2 3.7+；依赖缺失时，默认配置允许下载。Python 3.9+ 用于架构和 CLI 等检查，独立互操作检查另需 `cryptography`。离线构建、软件回退、共享库、ASan 和打包验证见[开发与使用](docs/user-guide.zh-CN.md)及[本地打包](docs/delivery.zh-CN.md)。
 
-### 5.2 NIST 标准测试向量
+## 整体架构
 
-- AES-128 加密：`32 43 f6 a8...` → `39 25 84 1d...` ✓
-- AES-128 解密：`39 25 84 1d...` → `32 43 f6 a8...` ✓
-- S-box：`sbox(0x00)=0x63`, `sbox(0x53)=0xED` ✓
-- 往返：`inv_sbox(sbox(x)) == x` (全 256 个值) ✓
+项目由单一 CMake 库和命令行工具组成，主要目录与文件如下：
 
----
-
-## 六、快速开始
-
-### 6.1 环境要求
-
-| 依赖 | 版本 |
-|------|------|
-| 编译器 | GCC 11+ / Clang 14+ (需 C++20) |
-| CMake | 3.20+ |
-| 测试框架 | Catch2 v3.7.1 (自动获取) |
-| 基准测试 | Google Benchmark v1.9.1 (自动获取) |
-
-### 6.2 构建
-
-```bash
-cd streamcipher
-
-# 基础构建（仅库）
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(nproc)
-
-# 完整构建（含测试、基准、示例、CLI）
-cmake -B build -DCMAKE_BUILD_TYPE=Release \
-    -DSTREAMCIPHER_BUILD_TESTS=ON \
-    -DSTREAMCIPHER_BUILD_BENCHMARKS=ON \
-    -DSTREAMCIPHER_BUILD_EXAMPLES=ON \
-    -DSTREAMCIPHER_BUILD_APPS=ON
-cmake --build build -j$(nproc)
+```text
+StreamCipher/
+	apps/                                   # 命令行程序
+		main.cpp                        # 进程入口与异常处理
+		options.cpp                     # 命令行参数解析
+		commands.cpp                    # 文件操作与基准命令
+	include/streamcipher/                   # 库的公共头文件
+		streamcipher.hpp                # 公共接口总入口
+		core/                           # AES、有限域与密码上下文接口
+		stream/                         # 流处理与文件接口
+		simd/                           # CPU 能力与 AES-NI 接口
+		memory/                         # 内存池、视图与清理工具
+	src/                                    # 库的内部实现
+		core/                           # 密码算法与消息状态
+			cipher.cpp              # CTR/GCM 状态机
+			parameters.cpp          # 模式参数与长度校验
+			aes.cpp                 # 标量 AES 与位切片封装
+			aes_dispatch.cpp        # 独立 AES fast 接口分派
+			bitslice.cpp            # 八块位切片 AES
+			gf.cpp                  # 有限域批量运算
+			ghash.cpp               # GCM 认证计算
+		stream/                         # 流与文件适配
+			stream.cpp              # 原地处理和一次性接口
+			pipeline.cpp            # 文件分块 I/O 与处理编排
+		io/                             # 输出事务
+			output_transaction.hpp  # 暂存文件与成功后发布
+		detail/                         # 内部认证比较与清理工具
+		simd/                           # CPU 能力检测与 AES-NI 实现
+		memory/                         # 内存清理实现
+	tests/                                  # 单元、回归、CLI 和互操作测试
+		consumer/                       # 独立 CMake 消费项目
+	benchmarks/                             # AES、有限域和流处理基准
+	examples/                               # 文件加解密示例
+	docs/                                   # 技术文档
+		examples/                       # 可编译的 SDK 示例
+		decisions/                      # 架构决策记录
+		history/                        # 历史资料
+	cmake/                                  # 平台检测与 CMake 包配置
+	scripts/                                # 构建、打包和检查脚本
+	CMakeLists.txt                          # 项目构建入口
+	CMakePresets.json                       # CMake 构建预设
+	README.md                               # 项目介绍与快速开始
+	LICENSE                                 # MIT 许可证
 ```
 
-### 6.3 运行测试
+文件处理依次经过 `FilePipeline`、`StreamProcessor` 和 `CipherCtx`；输出事务在 GCM 认证成功后发布解密结果。AES 使用运行时硬件分派并保留软件回退。详细设计见[架构与设计](docs/architecture.md)。
 
-```bash
-ctest --test-dir build
-```
+## 文档
 
-### 6.4 CLI 工具
+- [开发与使用](docs/user-guide.zh-CN.md)：环境、构建、CLI 和 SDK 集成。
+- [API 参考](docs/api.md)：公开接口、参数和错误处理。
+- [架构与设计](docs/architecture.md)：模块边界、数据流和安全前置条件。
+- [性能评估与平台验证](docs/architecture-assessment.zh-CN.md)：测量方法和平台验证范围。
+- [本地打包](docs/delivery.zh-CN.md)：安装、ZIP 和独立消费验证。
 
-```bash
-# 加密文件
-./build/apps/scipher encrypt data.txt data.enc
+## 许可证
 
-# 解密文件
-./build/apps/scipher decrypt data.enc recovered.txt
-
-# 性能基准
-./build/apps/scipher benchmark
-
-# 指定模式和密钥
-./build/apps/scipher encrypt input.dat output.enc \
-    --mode gcm \
-    --key 2b7e151628aed2a6abf7158809cf4f3c \
-    --nonce f0f1f2f3f4f5f6f7f8f9fafb
-```
-
-### 6.5 API 使用
-
-```cpp
-#include "streamcipher/streamcipher.hpp"
-
-// CTR 流式加密
-auto enc = streamcipher::stream::StreamProcessor::create(
-    streamcipher::cipher::Algorithm::AES_128,
-    streamcipher::cipher::Mode::CTR,
-    key, nonce, true);
-
-enc->process(data_chunk);   // 就地加密
-enc->finish();
-
-// GCM 认证加密
-auto gcm = streamcipher::stream::StreamProcessor::create(
-    streamcipher::cipher::Algorithm::AES_128,
-    streamcipher::cipher::Mode::GCM,
-    key, nonce, true);
-
-gcm->process(data_chunk);
-gcm->finish();
-auto tag = gcm->tag();      // 16 字节认证标签
-
-// 文件加密 (带进度)
-streamcipher::pipeline::FilePipeline pipe(algo, mode, key, nonce);
-pipe.on_progress([](uint64_t done, uint64_t total) {
-    printf("\r%llu%%", done * 100 / total);
-});
-pipe.encrypt_file("input.dat", "output.enc");
-```
-
----
-
-## 七、关键技术指标
-
-| 指标 | 描述 |
-|------|------|
-| **常数时间** | 所有密码运算固定循环迭代，无数据依赖分支 |
-| **零查表** | S-box 通过 GF(2⁸) 逆元+仿射变换实时计算 |
-| **内存开销** | O(1) 恒定 (CTR 模式)，GCM 模式额外 O(1) GHASH 状态 |
-| **并行度** | Bit-sliced 路径单次处理 8 个 AES 块 |
-| **缓存占用** | BitSliceState 128 字节 (alignas(64))，单条缓存行 |
-| **代码规模** | ~3500 行 C++ (不含测试/基准) |
-
----
-
-## 八、交付成果
-
-| 成果 | 说明 |
-|------|------|
-| 高性能 C++ 加密库 | 完整实现，编译通过，4/4 测试套件全部通过 |
-| 命令行工具原型 | `scipher encrypt/decrypt/benchmark` |
-| 完整单元测试 | 67K+ 断言，覆盖所有核心模块 |
-| 性能基准框架 | Google Benchmark + 内置 CLI 基准 |
-| 详细实现文档 | `docs/implementation.md` (约 30 KB) |
-| 架构与 API 文档 | `docs/architecture.md` + `docs/api.md` |
-
----
-
-## 九、后续工作
-
-- [ ] AES-256 与 SM4 国密支持
-- [ ] ARM NEON SIMD 后端
-- [ ] 完全在 bit-sliced 域中的 Canright 组合域 S-box 电路
-- [ ] io_uring 内核旁路 I/O
-- [ ] 申请软件著作权
-
----
-
-## 十、参考文献
-
-1. Käsper & Schwabe, "Faster and Timing-Attack Resistant AES-GCM", CHES 2009
-2. Canright, "A Very Compact S-box for AES", CHES 2005
-3. NIST FIPS 197, "Advanced Encryption Standard (AES)", 2001
-4. NIST SP 800-38D, "GCM Mode", 2007
-5. Intel, "AES-NI Instructions", 2010
-
----
-
-## 十一、许可证
-
-MIT License — 详见 `LICENSE` 文件
+[MIT License](LICENSE)

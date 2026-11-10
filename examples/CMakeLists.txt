@@ -5,4 +5,5 @@ add_executable(decrypt_file decrypt_file.cpp)
 
 foreach(target encrypt_file decrypt_file)
     target_link_libraries(${target} PRIVATE streamcipher)
+    streamcipher_copy_runtime(${target})
 endforeach()

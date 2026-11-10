@@ -2,13 +2,14 @@
 //
 // 标量路径：一次一个块，用 gf::sbox() 代数 S-box
 // bit-sliced 路径：一次 8 个块，走 bitslice 模块
-// AES-NI 路径：x86 硬件指令（编译时检测 __AES__）
+// AES-NI 路径：编译开关 + 运行时 CPU 检测
 
 #include "streamcipher/core/aes.hpp"
 #include "streamcipher/core/gf.hpp"
 #include "streamcipher/core/bitslice.hpp"
 #include <cstring>
 #include <array>
+#include "../detail/wipe_guard.hpp"
 
 namespace streamcipher::aes {
 
@@ -39,6 +40,7 @@ RoundKeys expand_key(std::span<const uint8_t, KEY_SIZE> key) noexcept {
             prev[15],  // col3 byte3 → byte2
             prev[12],  // col3 byte0 → byte3 (wrap)
         };
+        detail::WipeGuard wipe_temp(temp, sizeof(temp));
         for (auto& t : temp) t = gf::sbox(t);
         temp[0] ^= RCON[round];
 
@@ -136,12 +138,14 @@ void decrypt_block(std::span<uint8_t, BLOCK_SIZE> block,
 void encrypt_ecb(std::span<uint8_t, BLOCK_SIZE> block,
                  std::span<const uint8_t, KEY_SIZE> key) noexcept {
     auto rk = expand_key(key);
+    detail::WipeGuard wipe(rk.data(), sizeof(rk));
     encrypt_block(block, rk);
 }
 
 void decrypt_ecb(std::span<uint8_t, BLOCK_SIZE> block,
                  std::span<const uint8_t, KEY_SIZE> key) noexcept {
     auto rk = expand_key(key);
+    detail::WipeGuard wipe(rk.data(), sizeof(rk));
     decrypt_block(block, rk);
 }
 
@@ -152,6 +156,7 @@ void decrypt_ecb(std::span<uint8_t, BLOCK_SIZE> block,
 void encrypt_bitsliced(uint8_t* blocks, size_t count,
                        std::span<const uint8_t, KEY_SIZE> key) noexcept {
     auto rk = expand_key(key);
+    detail::WipeGuard wipe(rk.data(), sizeof(rk));
     constexpr size_t B = bitslice::SLICE_WIDTH;
     size_t full_slices = count / B;
 
@@ -165,23 +170,6 @@ void encrypt_bitsliced(uint8_t* blocks, size_t count,
         auto block = std::span<uint8_t, BLOCK_SIZE>(blocks + i * BLOCK_SIZE, BLOCK_SIZE);
         encrypt_block(block, rk);
     }
-}
-
-// ---- 快速路径：运行时选最优 ----
-// 当前默认走 bit-sliced。AES-NI 检测只是编译期的，后面改成 CPUID。
-
-void encrypt_fast(uint8_t* blocks, size_t count,
-                  std::span<const uint8_t, KEY_SIZE> key) noexcept {
-    // TODO: CPUID 检测 AES-NI，有的话调 simd::aesni
-    encrypt_bitsliced(blocks, count, key);
-}
-
-bool has_aesni() noexcept {
-#ifdef __AES__
-    return true;
-#else
-    return false;  // TODO: 加 CPUID 运行时检测
-#endif
 }
 
 } // namespace streamcipher::aes

@@ -4,7 +4,7 @@
 
 using namespace streamcipher;
 
-int main(int argc, char* argv[]) {
+int main(int argc, char* argv[]) try {
     if (argc != 3) {
         std::cerr << "Usage: " << argv[0] << " <input> <output>\n";
         return 1;
@@ -38,5 +38,8 @@ int main(int argc, char* argv[]) {
     auto bytes = pipe.decrypt_file(argv[1], argv[2], config);
     std::cout << "\rDone. " << bytes << " bytes written.\n";
 
-    return bytes > 0 ? 0 : 1;
+    return 0;
+} catch (const std::exception& error) {
+    std::cerr << "Error: " << error.what() << "\n";
+    return 1;
 }

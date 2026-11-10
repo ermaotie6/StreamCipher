@@ -10,11 +10,6 @@
 #include <cstddef>
 #include <span>
 
-#ifdef STREAMCIPHER_AESNI
-#include <wmmintrin.h>   // AES-NI intrinsics
-#include <emmintrin.h>   // SSE2
-#endif
-
 namespace streamcipher::simd::aesni {
 
 // ── Single-Round Operations ─────────────────────────────────
@@ -54,7 +49,8 @@ void expand_key_128(std::span<const uint8_t, 16> key,
 void encrypt_blocks(uint8_t* blocks, size_t count,
                     std::span<const uint8_t, 176> round_keys) noexcept;
 
-/// Decrypt multiple blocks using AES-NI.
+/// Decrypt multiple blocks using AES-NI. Accepts the same encryption round keys
+/// returned by expand_key_128(); middle keys are transformed internally.
 void decrypt_blocks(uint8_t* blocks, size_t count,
                     std::span<const uint8_t, 176> round_keys) noexcept;
 

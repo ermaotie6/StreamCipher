@@ -1,32 +1,17 @@
 // Cipher abstraction — symmetric cipher interface
 //
-// Provides a uniform interface over all supported ciphers (AES-128, etc.)
-// and block cipher modes (ECB, CTR, GCM).
+// Provides a uniform interface for AES-128 CTR/GCM messages.
+// The retained ECB enum is not supported by this streaming factory.
 
 #pragma once
 
-#include "streamcipher/core/aes.hpp"
+#include "streamcipher/core/parameters.hpp"
 #include <cstdint>
 #include <cstddef>
 #include <span>
 #include <memory>
 
 namespace streamcipher::cipher {
-
-// ── Cipher Algorithm ────────────────────────────────────────
-
-enum class Algorithm : uint8_t {
-    AES_128 = 0,
-    // Future: AES_256, SM4, etc.
-};
-
-// ── Cipher Mode ─────────────────────────────────────────────
-
-enum class Mode : uint8_t {
-    ECB = 0,     // Electronic Codebook (mainly for testing)
-    CTR = 1,     // Counter mode (stream cipher)
-    GCM = 2,     // Galois/Counter Mode (authenticated encryption)
-};
 
 // ── Cipher Context ──────────────────────────────────────────
 
@@ -49,18 +34,22 @@ public:
     virtual void update(std::span<const uint8_t> input,
                         std::span<uint8_t> output) = 0;
 
-    /// Finalize the operation (flushes buffers, appends authentication tag for GCM).
+    /// Finalize once; repeated calls are harmless. Updates afterwards throw.
     virtual void finalize() = 0;
 
-    /// Get the authentication tag (GCM only, 16 bytes).
+    /// Get the authentication tag (GCM only, 16 bytes after finalize()).
     virtual std::span<const uint8_t> tag() const = 0;
+
+    /// Compare all 16 bytes after finalize(). Decrypted output is untrusted
+    /// until this returns true.
+    [[nodiscard]] bool verify_tag(std::span<const uint8_t> expected) const;
 
     [[nodiscard]] Algorithm algorithm() const noexcept { return algo_; }
     [[nodiscard]] Mode      mode()      const noexcept { return mode_; }
 
 protected:
-    Algorithm algo_;
-    Mode      mode_;
+    Algorithm algo_ = Algorithm::AES_128;
+    Mode      mode_ = Mode::CTR;
 };
 
 // ── Factory ─────────────────────────────────────────────────
@@ -70,7 +59,16 @@ protected:
     Algorithm algo,
     Mode      mode,
     std::span<const uint8_t, 16> key,
-    std::span<const uint8_t, 12> nonce  // 96-bit nonce for CTR/GCM
+    std::span<const uint8_t, 12> nonce, // 96-bit nonce for CTR/GCM
+    bool encrypt = true
 );
 
+// Typed direction overload; bool entry point remains source-compatible.
+[[nodiscard]] inline std::unique_ptr<CipherCtx> create(
+    Algorithm algo, Mode mode, std::span<const uint8_t, KEY_SIZE> key,
+    std::span<const uint8_t, NONCE_SIZE> nonce, Direction direction) {
+    if (direction != Direction::Encrypt && direction != Direction::Decrypt)
+        throw std::invalid_argument("Unsupported cipher direction");
+    return create(algo, mode, key, nonce, direction == Direction::Encrypt);
+}
 } // namespace streamcipher::cipher

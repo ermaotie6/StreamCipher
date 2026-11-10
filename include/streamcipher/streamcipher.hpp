@@ -20,3 +20,4 @@
 // Memory — Pool & span utilities
 #include "streamcipher/memory/pool.hpp"
 #include "streamcipher/memory/span_utils.hpp"
+#include "streamcipher/memory/secure.hpp"

@@ -21,5 +21,5 @@ int main() {
         for (size_t i = 0; i < 16; i++)
             printf("%02zx: %02x != %02x\n", i, blocks[i], recovered[i]);
     }
-    return 0;
+    return memcmp(blocks, recovered, B*16) == 0 ? 0 : 1;
 }

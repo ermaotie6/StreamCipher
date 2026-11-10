@@ -6,6 +6,7 @@
 #include <vector>
 
 using namespace streamcipher::aes;
+namespace bitslice = streamcipher::bitslice;
 
 static constexpr uint8_t KEY[16] = {
     0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6,
@@ -69,9 +70,9 @@ static void BM_AES_Scalar_128B(benchmark::State& state) {
     constexpr size_t N = bitslice::SLICE_WIDTH;
     std::vector<uint8_t> blocks(N * 16);
     for (size_t i = 0; i < blocks.size(); ++i) blocks[i] = static_cast<uint8_t>(i);
-    auto rk = expand_key(std::span<const uint8_t, 16>(KEY));
-
     for (auto _ : state) {
+        // Match encrypt_bitsliced: both measurements include key expansion.
+        auto rk = expand_key(std::span<const uint8_t, 16>(KEY));
         for (size_t b = 0; b < N; ++b) {
             encrypt_block(std::span<uint8_t, 16>(blocks.data() + b * 16, 16), rk);
         }

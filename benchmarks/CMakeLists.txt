@@ -1,13 +1,27 @@
-# Benchmarks — Google Benchmark
-
-include(FetchContent)
-
-FetchContent_Declare(
-    google_benchmark
-    GIT_REPOSITORY https://github.com/google/benchmark.git
-    GIT_TAG        v1.9.1
-)
-FetchContent_MakeAvailable(google_benchmark)
+if(NOT TARGET benchmark::benchmark)
+    find_package(benchmark 1.9 CONFIG QUIET)
+endif()
+if(NOT TARGET benchmark::benchmark)
+    if(NOT STREAMCIPHER_FETCH_DEPENDENCIES AND
+       NOT EXISTS "${FETCHCONTENT_SOURCE_DIR_GOOGLE_BENCHMARK}/CMakeLists.txt")
+        message(FATAL_ERROR "Google Benchmark 1.9+ required; install it or enable STREAMCIPHER_FETCH_DEPENDENCIES.")
+    endif()
+    include(FetchContent)
+    FetchContent_Declare(google_benchmark
+        GIT_REPOSITORY https://github.com/google/benchmark.git
+        GIT_TAG v1.9.1)
+    function(streamcipher_fetch_benchmark)
+        set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
+        set(BUILD_SHARED_LIBS OFF)
+        set(BENCHMARK_ENABLE_TESTING OFF)
+        set(BENCHMARK_ENABLE_INSTALL OFF)
+        set(BENCHMARK_INSTALL_DOCS OFF)
+        FetchContent_MakeAvailable(google_benchmark)
+        streamcipher_instrument(benchmark PRIVATE)
+        set_property(DIRECTORY "${google_benchmark_SOURCE_DIR}" PROPERTY EXCLUDE_FROM_ALL TRUE)
+    endfunction()
+    streamcipher_fetch_benchmark()
+endif()
 
 add_executable(bench_gf      bench_gf.cpp)
 add_executable(bench_aes     bench_aes.cpp)
@@ -15,4 +29,5 @@ add_executable(bench_stream  bench_stream.cpp)
 
 foreach(target bench_gf bench_aes bench_stream)
     target_link_libraries(${target} PRIVATE streamcipher benchmark::benchmark)
+    streamcipher_copy_runtime(${target})
 endforeach()

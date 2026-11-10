@@ -53,12 +53,12 @@ int main() {
     uint8_t scalar[16];
     std::memcpy(scalar, plaintext, 16);
     for (int i = 0; i < 16; i++) scalar[i] ^= rk[0][i];
-    check_unpacked(state, scalar, "AddRoundKey[0]");
+    if (!check_unpacked(state, scalar, "AddRoundKey[0]")) return 1;
     
     // Test SubBytes
     bitslice::sub_bytes(state);
     for (int i = 0; i < 16; i++) scalar[i] = gf::sbox(scalar[i]);
-    check_unpacked(state, scalar, "SubBytes");
+    if (!check_unpacked(state, scalar, "SubBytes")) return 1;
     
     // Test ShiftRows
     bitslice::shift_rows(state);
@@ -74,7 +74,7 @@ int main() {
         t = tmp[15]; tmp[15]=tmp[11]; tmp[11]=tmp[7]; tmp[7]=tmp[3]; tmp[3]=t;
         std::memcpy(scalar, tmp, 16);
     }
-    check_unpacked(state, scalar, "ShiftRows");
+    if (!check_unpacked(state, scalar, "ShiftRows")) return 1;
     
     return 0;
 }

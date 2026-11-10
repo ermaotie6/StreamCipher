@@ -158,6 +158,7 @@ TEST_CASE("GCM stream — streaming API", "[stream][gcm]") {
         false);
     dec->process(data);
     dec->finish();
+    REQUIRE(dec->verify_tag(tag));
 
     REQUIRE(std::memcmp(data.data(), orig.data(), data.size()) == 0);
 }

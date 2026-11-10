@@ -3,8 +3,8 @@
 // 原始论文: Käsper & Schwabe, CHES 2009
 // 简单说：传统 AES 是一个字节一个字节处理，我们改成每个 bit 位置
 // 上 8 个块的值打包成一个 uint8_t（SliceWord），然后所有轮操作
-// （SubBytes/ShiftRows/MixColumns/AddRoundKey）都在 bit-slice 域里
-// 用布尔电路搞定，全程不查表。
+// 中 ShiftRows/MixColumns/AddRoundKey 在 bit-slice 域执行；
+// SubBytes 提取字节调用代数 S-box，全程不查表。
 
 #pragma once
 
@@ -41,7 +41,7 @@ void unpack(const BitSliceState& state,
 [[nodiscard]] BitSliceState not_state(const BitSliceState& a) noexcept;
 [[nodiscard]] BitSliceState or_state(const BitSliceState& a, const BitSliceState& b) noexcept;
 
-// AES 轮操作（全部在 bit-sliced 域中）
+// AES 轮操作（SubBytes 使用字节提取和代数 S-box）
 void sub_bytes(BitSliceState& state) noexcept;
 void inv_sub_bytes(BitSliceState& state) noexcept;
 void shift_rows(BitSliceState& state) noexcept;

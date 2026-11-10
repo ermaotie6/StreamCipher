@@ -5,15 +5,20 @@
 using namespace streamcipher::gf;
 
 static void BM_GF_SingleMul(benchmark::State& state) {
+    GF8 a = 0x53, b = 0xca;
     for (auto _ : state) {
-        benchmark::DoNotOptimize(mul(0x53, 0xca));
+        benchmark::DoNotOptimize(a);
+        benchmark::DoNotOptimize(b);
+        benchmark::DoNotOptimize(mul(a, b));
     }
 }
 BENCHMARK(BM_GF_SingleMul);
 
 static void BM_GF_SingleInv(benchmark::State& state) {
+    GF8 a = 0x53;
     for (auto _ : state) {
-        benchmark::DoNotOptimize(inv(0x53));
+        benchmark::DoNotOptimize(a);
+        benchmark::DoNotOptimize(inv(a));
     }
 }
 BENCHMARK(BM_GF_SingleInv);
@@ -36,7 +41,7 @@ static void BM_GF_BatchInv_1K(benchmark::State& state) {
     constexpr size_t N = 1024;
     GF8 src[N], dst[N];
     for (size_t i = 0; i < N; ++i) {
-        src[i] = static_cast<uint8_t>(i + 1);  // avoid 0
+        src[i] = static_cast<uint8_t>(i); // Include all byte values, including zero.
     }
     for (auto _ : state) {
         inv_batch(dst, src, N);

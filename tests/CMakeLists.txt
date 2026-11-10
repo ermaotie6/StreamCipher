@@ -1,24 +1,85 @@
-# Tests — Catch2 unit tests
-
-include(FetchContent)
-
-FetchContent_Declare(
-    Catch2
-    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-    GIT_TAG        v3.7.1
-)
-FetchContent_MakeAvailable(Catch2)
+# Prefer existing or installed dependencies; downloads are an explicit capability.
+if(NOT TARGET Catch2::Catch2WithMain)
+    find_package(Catch2 3.7 CONFIG QUIET)
+endif()
+if(NOT TARGET Catch2::Catch2WithMain)
+    if(NOT STREAMCIPHER_FETCH_DEPENDENCIES AND
+       NOT EXISTS "${FETCHCONTENT_SOURCE_DIR_CATCH2}/CMakeLists.txt")
+        message(FATAL_ERROR "Catch2 3.7+ required. Install it, provide its target, or enable STREAMCIPHER_FETCH_DEPENDENCIES.")
+    endif()
+    include(FetchContent)
+    FetchContent_Declare(Catch2
+        GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+        GIT_TAG v3.7.1)
+    function(streamcipher_fetch_catch2)
+        set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
+        set(BUILD_SHARED_LIBS OFF)
+        set(CATCH_INSTALL_DOCS OFF)
+        set(CATCH_INSTALL_EXTRAS OFF)
+        FetchContent_MakeAvailable(Catch2)
+        streamcipher_instrument(Catch2 PRIVATE)
+        streamcipher_instrument(Catch2WithMain PRIVATE)
+        set_property(DIRECTORY "${catch2_SOURCE_DIR}" PROPERTY EXCLUDE_FROM_ALL TRUE)
+    endfunction()
+    streamcipher_fetch_catch2()
+endif()
 
 add_executable(test_gf        test_gf.cpp)
 add_executable(test_aes       test_aes.cpp)
 add_executable(test_stream    test_stream.cpp)
 add_executable(test_simd      test_simd.cpp)
+add_executable(test_regressions test_regressions.cpp)
+add_executable(test_pipeline test_pipeline.cpp)
+add_executable(test_contracts test_contracts.cpp)
 
-foreach(target test_gf test_aes test_stream test_simd)
-    target_link_libraries(${target} PRIVATE streamcipher Catch2::Catch2WithMain)
+foreach(target test_gf test_aes test_stream test_simd test_regressions test_pipeline test_contracts)
+    target_link_libraries(${target} PRIVATE streamcipher::streamcipher Catch2::Catch2WithMain)
+    streamcipher_copy_runtime(${target})
+endforeach()
+
+# Retained diagnostics must compile and propagate mismatches as test failures.
+foreach(diagnostic bs_debug bs_debug2 sizes)
+    add_executable(${diagnostic} ${diagnostic}.cpp)
+    target_link_libraries(${diagnostic} PRIVATE streamcipher::streamcipher)
+    streamcipher_copy_runtime(${diagnostic})
+    add_test(NAME ${diagnostic} COMMAND ${diagnostic})
+    set_tests_properties(${diagnostic} PROPERTIES TIMEOUT 30 LABELS "diagnostic")
 endforeach()
 
 add_test(NAME gf       COMMAND test_gf)
 add_test(NAME aes      COMMAND test_aes)
 add_test(NAME stream   COMMAND test_stream)
 add_test(NAME simd     COMMAND test_simd)
+add_test(NAME regressions COMMAND test_regressions)
+add_test(NAME pipeline COMMAND test_pipeline)
+add_test(NAME contracts COMMAND test_contracts)
+set_tests_properties(gf aes stream simd regressions pipeline contracts
+    PROPERTIES TIMEOUT 180 LABELS "unit")
+
+# Compile each public header in an isolated translation unit.
+file(GLOB_RECURSE streamcipher_public_headers CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/include/streamcipher/*.hpp")
+set(header_checks)
+foreach(header IN LISTS streamcipher_public_headers)
+    file(RELATIVE_PATH relative "${PROJECT_SOURCE_DIR}/include" "${header}")
+    string(MAKE_C_IDENTIFIER "${relative}" identifier)
+    set(check "${CMAKE_CURRENT_BINARY_DIR}/headers/${identifier}.cpp")
+    file(GENERATE OUTPUT "${check}" CONTENT "#include <${relative}>\n")
+    list(APPEND header_checks "${check}")
+endforeach()
+add_library(streamcipher_header_checks OBJECT ${header_checks})
+target_link_libraries(streamcipher_header_checks PRIVATE streamcipher::streamcipher)
+
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME architecture COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/check_architecture.py)
+    set_tests_properties(architecture PROPERTIES TIMEOUT 30 LABELS "architecture")
+    add_test(NAME verification COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_verification.py)
+    set_tests_properties(verification PROPERTIES TIMEOUT 60 LABELS "integration")
+endif()
+if(STREAMCIPHER_BUILD_APPS)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME cli COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_cli.py $<TARGET_FILE:scipher>)
+        set_tests_properties(cli PROPERTIES TIMEOUT 120 LABELS "integration")
+    endif()
+endif()

@@ -2,10 +2,34 @@
 #include <catch2/catch_test_macros.hpp>
 #include "streamcipher/core/aes.hpp"
 #include "streamcipher/core/bitslice.hpp"
+#include "streamcipher/core/gf.hpp"
+#include <array>
 #include <cstring>
 #include <vector>
 
 using namespace streamcipher::aes;
+
+TEST_CASE("Bit-sliced substitution preserves every byte and lane", "[aes][bitslice]") {
+    namespace bs = streamcipher::bitslice;
+    // Compare representations directly, rather than trusting a forward/inverse
+    // round-trip in which two layout errors could cancel each other.
+    for (unsigned offset = 0; offset < 256; ++offset) {
+        std::array<uint8_t, bs::SLICE_BYTES> input{}, output{};
+        for (size_t i = 0; i < input.size(); ++i)
+            input[i] = static_cast<uint8_t>(offset + i);
+        auto state = bs::pack(input);
+        bs::sub_bytes(state);
+        bs::unpack(state, output);
+        for (size_t i = 0; i < input.size(); ++i)
+            REQUIRE(output[i] == streamcipher::gf::sbox(input[i]));
+
+        state = bs::pack(input);
+        bs::inv_sub_bytes(state);
+        bs::unpack(state, output);
+        for (size_t i = 0; i < input.size(); ++i)
+            REQUIRE(output[i] == streamcipher::gf::inv_sbox(input[i]));
+    }
+}
 
 // NIST AES-128 test vector (FIPS 197, Appendix C.1)
 static constexpr uint8_t TEST_KEY[16] = {
@@ -103,21 +127,8 @@ TEST_CASE("AES-128 bit-sliced batch decrypt", "[aes][bitslice]") {
         std::memcpy(blocks.data() + b * 16, TEST_CIPHERTEXT, 16);
     }
 
-    // Use the bitslice layer directly for verification via the aes wrapper
-    [[maybe_unused]] auto rk2 = expand_key(std::span<const uint8_t, 16>(TEST_KEY));
-
-    // Change to using bitslice directly for decrypt
-    namespace bs = streamcipher::bitslice;
-    auto state = bs::pack(
-        std::span<const uint8_t, bs::SLICE_BYTES>(blocks.data(), bs::SLICE_BYTES));
-    bs::sub_bytes(state);
-    bs::shift_rows(state);
-    // Verify round-trip through the aes scalar decrypt path instead:
     auto rk = expand_key(std::span<const uint8_t, 16>(TEST_KEY));
-    // Decrypt blocks individually to verify
-    for (size_t b = 0; b < B; ++b) {
-        decrypt_block(std::span<uint8_t, 16>(blocks.data() + b * 16, 16), rk);
-    }
+    streamcipher::bitslice::decrypt_blocks(blocks.data(), rk);
 
     bool all_match = true;
     for (size_t b = 0; b < B; ++b) {

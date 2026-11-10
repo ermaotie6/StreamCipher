@@ -1,7 +1,7 @@
 // SIMD abstraction layer — architecture-neutral vector operations
 //
-// Provides a unified interface over x86 SSE/AVX and ARM NEON intrinsics.
-// The compiler selects the active backend based on STREAMCIPHER_SIMD compile flag.
+// Public vector layouts are independent of build flags; portable fallbacks exist.
+// CPU feature queries describe hardware capability, not the selected AES backend.
 
 #pragma once
 
@@ -19,11 +19,9 @@ struct alignas(16) Vec128 {
 };
 
 /// 256-bit vector (AVX2)
-#ifdef STREAMCIPHER_SIMD
 struct alignas(32) Vec256 {
     uint8_t data[32];
 };
-#endif
 
 // ── Core Operations ─────────────────────────────────────────
 
@@ -34,7 +32,7 @@ struct alignas(32) Vec256 {
 /// Performs GF multiplication lane-wise on 16 bytes.
 [[nodiscard]] Vec128 gf_mul128(const Vec128& a, const Vec128& b) noexcept;
 
-/// Shift bytes left within a 128-bit vector (used in AES ShiftRows).
+/// Rotate bytes left within a 128-bit vector (shift is reduced modulo 16).
 [[nodiscard]] Vec128 shift_bytes_left(const Vec128& a, unsigned shift) noexcept;
 
 /// Load 16 bytes from unaligned memory.
@@ -45,7 +43,6 @@ void store128(uint8_t* ptr, const Vec128& v) noexcept;
 
 // ── Batch Operations (256-bit AVX2) ─────────────────────────
 
-#ifdef STREAMCIPHER_SIMD
 /// XOR two 256-bit vectors.
 [[nodiscard]] Vec256 xor256(const Vec256& a, const Vec256& b) noexcept;
 
@@ -57,7 +54,6 @@ void store256(uint8_t* ptr, const Vec256& v) noexcept;
 
 /// GF(2^8) multiplication on 32 bytes in parallel.
 [[nodiscard]] Vec256 gf_mul256(const Vec256& a, const Vec256& b) noexcept;
-#endif
 
 // ── CPU Feature Detection ───────────────────────────────────
 
